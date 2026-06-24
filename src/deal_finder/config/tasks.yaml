@@ -1,0 +1,54 @@
+interpret_theme_task:
+  description: >
+    Translate the style brief "{theme}" into a concrete capsule shopping list.
+    For each item specify: garment type, target fabric, colour, and a fit note.
+    Then produce 2 specific web search queries per item that would surface
+    real products with prices from Australian retailers.
+  expected_output: >
+    A list of 5 to 8 clothing items. For each: garment type, fabric,
+    colour, fit note, and 2 search queries.
+  agent: theme_interpreter
+
+hunt_deals_task:
+  description: >
+    For each item and query from the previous task, search the web for actual
+    purchasable products. For each result capture: product name, retailer,
+    price, currency, and the source URL. Only include results you retrieved
+    from search. Do not invent products, prices, or links.
+    CRITICAL: Copy each URL verbatim, character-for-character, from the
+    "link" field of a search result. Never shorten, guess, reconstruct, or
+    pretty-up a URL. If a search returned no usable result for an item, omit
+    that item entirely rather than inventing a plausible-looking link.
+  expected_output: >
+    A flat list of real products. Each entry has: item category, product name,
+    retailer, price, currency, URL.
+  agent: deal_hunter
+  context:
+    - interpret_theme_task
+
+curate_task:
+  description: >
+    From the hunted products, select the best one or two options per garment
+    for the brief "{theme}". Total spend must stay under {budget} AUD.
+    Exclude anything synthetic. Rank remaining options by value for money.
+    Write a one-line justification for each pick.
+  expected_output: >
+    A curated shortlist. One to two products per garment, ranked, each with
+    a one-line justification and price.
+  agent: curator
+  context:
+    - hunt_deals_task
+
+report_task:
+  description: >
+    Format the curated shortlist into a markdown buyer's guide for "{theme}".
+    Group by garment. Show product name, retailer, price, and URL for each.
+    Use the exact URLs passed from the previous task — do not modify them.
+    End with a total estimated spend.
+  expected_output: >
+    A clean markdown buyer's guide, grouped by garment, with prices, links,
+    and a total.
+  agent: reporter
+  context:
+    - curate_task
+  output_file: output/deals.md
