@@ -1,24 +1,25 @@
 [project]
 name = "deal_finder"
 version = "0.1.0"
-description = "deal_finder using crewAI"
-authors = [{ name = "Your Name", email = "you@example.com" }]
+description = "Find genuine deals on mid-to-premium menswear in Australian shops"
 requires-python = ">=3.10,<3.14"
 dependencies = [
-    "crewai[tools]==1.14.7"
+    "anthropic>=1.8.0",
+    "fastapi>=0.115",
+    "python-dotenv>=1.0",
+    "requests>=2.34.2",
+    "uvicorn>=0.30",
 ]
 
 [project.scripts]
-deal_finder = "deal_finder.main:run"
-run_crew = "deal_finder.main:run"
-train = "deal_finder.main:train"
-replay = "deal_finder.main:replay"
-test = "deal_finder.main:test"
-run_with_trigger = "deal_finder.main:run_with_trigger"
+deal_finder = "deal_finder.main:cli"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.crewai]
-type = "crew"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

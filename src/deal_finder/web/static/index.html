@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <title>Deal Finder</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23007AFF'/%3E%3Cpath d='M20 18h14l12 12-16 16-12-12V20z' fill='none' stroke='white' stroke-width='4' stroke-linejoin='round'/%3E%3Ccircle cx='27' cy='27' r='3' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app">
+    <nav class="sidebar" aria-label="Main">
+      <div class="sidebar-brand">
+        <span class="app-icon" aria-hidden="true"><svg class="i"><use href="#i-tag"/></svg></span>
+        <span>Deal Finder</span>
+      </div>
+      <a class="side-item" href="#/deals" data-nav="deals"><svg class="i"><use href="#i-tag"/></svg>Deals</a>
+      <a class="side-item" href="#/outfit" data-nav="outfit"><svg class="i"><use href="#i-sparkles"/></svg>Outfit</a>
+      <a class="side-item" href="#/saved" data-nav="saved"><svg class="i"><use href="#i-heart"/></svg>Saved<span class="side-count" id="saved-count"></span></a>
+      <a class="side-item" href="#/stores" data-nav="stores"><svg class="i"><use href="#i-store"/></svg>Stores</a>
+      <div class="side-heading">Categories</div>
+      <div id="side-cats"></div>
+      <div class="side-foot" id="side-foot"></div>
+    </nav>
+
+    <main id="view" tabindex="-1"></main>
+
+    <nav class="tabbar" aria-label="Main">
+      <a href="#/deals" data-nav="deals"><svg class="i"><use href="#i-tag"/></svg><span>Deals</span></a>
+      <a href="#/outfit" data-nav="outfit"><svg class="i"><use href="#i-sparkles"/></svg><span>Outfit</span></a>
+      <a href="#/saved" data-nav="saved"><svg class="i"><use href="#i-heart"/></svg><span>Saved</span></a>
+      <a href="#/stores" data-nav="stores"><svg class="i"><use href="#i-store"/></svg><span>Stores</span></a>
+    </nav>
+  </div>
+
+  <div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
+  <section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden></section>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- Icons drawn to sit alongside SF Symbols: 24px grid, 1.8 stroke, round caps. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M10 3l1.6 4.4L16 9l-4.4 1.6L10 15l-1.6-4.4L4 9l4.4-1.6zM18 13l.9 2.1L21 16l-2.1.9L18 19l-.9-2.1L15 16l2.1-.9z"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20s-7.5-4.6-9-9.3C2 7.4 4.3 4.5 7.4 4.5c2 0 3.6 1.1 4.6 2.7 1-1.6 2.6-2.7 4.6-2.7 3.1 0 5.4 2.9 4.4 6.2C19.5 15.4 12 20 12 20z"/></symbol>
+      <symbol id="i-heart-fill" viewBox="0 0 24 24"><path class="fill" d="M12 20s-7.5-4.6-9-9.3C2 7.4 4.3 4.5 7.4 4.5c2 0 3.6 1.1 4.6 2.7 1-1.6 2.6-2.7 4.6-2.7 3.1 0 5.4 2.9 4.4 6.2C19.5 15.4 12 20 12 20z"/></symbol>
+      <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3.5 12.2V4.5a1 1 0 011-1h7.7l8.3 8.3a1.5 1.5 0 010 2.1l-6.6 6.6a1.5 1.5 0 01-2.1 0z"/><circle cx="8" cy="8" r="1.4"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+      <symbol id="i-check-seal" viewBox="0 0 24 24"><path d="M12 2.8l2.3 1.7 2.8-.2.9 2.7 2.4 1.5-.8 2.7.8 2.7-2.4 1.5-.9 2.7-2.8-.2L12 19.6l-2.3-1.7-2.8.2-.9-2.7-2.4-1.5.8-2.7-.8-2.7L6 7l.9-2.7 2.8.2z"/><path d="M8.5 11.3l2.4 2.4 4.6-4.6"/></symbol>
+      <symbol id="i-xmark" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+      <symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 17L17 7M8.5 7H17v8.5"/></symbol>
+      <symbol id="i-share" viewBox="0 0 24 24"><path d="M12 3v12M8 7l4-4 4 4M6 11H5v9.5h14V11h-1"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 6.5h15M9.5 6.5V4.5h5v2M6.5 6.5l1 13h9l1-13M10 10.5v5.5M14 10.5v5.5"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9.5 5.5L16 12l-6.5 6.5"/></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/></symbol>
+      <symbol id="i-shirt" viewBox="0 0 24 24"><path d="M9 3.5L4 6 2.5 10.5l3 1.2V20.5h13v-8.8l3-1.2L20 6l-5-2.5c-.6 1.5-1.7 2.3-3 2.3S9.6 5 9 3.5z"/></symbol>
+      <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l8.5-8.5M16 7l2.5 2.5M14 9l2 2"/></symbol>
+      <symbol id="i-store" viewBox="0 0 24 24"><path d="M4 9.5V20h16V9.5M3 5l1.5-2h15L21 5v2.2a2.6 2.6 0 01-4.5 1.8 2.6 2.6 0 01-4.5 0 2.6 2.6 0 01-4.5 0A2.6 2.6 0 013 7.2zM9.5 20v-5.5h5V20"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L20 20"/></symbol>
+      <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+      <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 10-2.3 5.7M20 5v6h-6"/></symbol>
+      <symbol id="i-exclaim" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.3v.2"/></symbol>
+    </defs>
+  </svg>
+
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>

@@ -1,54 +1,125 @@
-# DealFinder Crew
+# Deal Finder
 
-Welcome to the DealFinder Crew project, powered by [crewAI](https://crewai.com). This template is designed to help you set up a multi-agent AI system with ease, leveraging the powerful and flexible framework provided by crewAI. Our goal is to enable your agents to collaborate effectively on complex tasks, maximizing their collective intelligence and capabilities.
+Find genuine markdowns on mid-to-premium menswear from Australian shops.
 
-## Installation
+Deal Finder reads the full public catalogues of 13 shops for free, keeps every
+price it sees, and ranks what is actually a good buy. There are no AI agents
+and no search costs unless you turn them on.
 
-Ensure you have Python >=3.10 <3.14 installed on your system. This project uses [UV](https://docs.astral.sh/uv/) for dependency management and package handling, offering a seamless setup and execution experience.
+![Deals on desktop](docs/deals.jpg)
 
-First, if you haven't already, install uv:
+<p>
+<img src="docs/phone-deals.jpg" width="260" alt="Deals on a phone">
+<img src="docs/phone-product.jpg" width="260" alt="A product with its price history">
+</p>
+
+## Shops
+
+| Free: full catalogue, every price change | Tier |
+|---|---|
+| M.J. Bale, P. Johnson, Harrolds, Aquila, Venroy, Bassike, Calibre | Premium |
+| Peter Jackson, Industrie, Academy Brand, Jac+Jack, Oxford, Gazman | Mid |
+
+These shops run on Shopify, which publishes each catalogue with sale and full
+prices. Deal Finder keeps only menswear, and skips gift cards, socks,
+underwear, eyewear and shoe care.
+
+THE ICONIC, David Jones and Country Road block catalogue reads. You can search
+them on request through Serper (optional, about A$0.002 a search, capped per
+day, cached for a day). Only the current price is known for those, so they
+appear beside the scored deals rather than among them.
+
+To add a Shopify shop, add one line to `src/deal_finder/stores.py`.
+
+## What counts as a good deal
+
+Each item gets a score out of 100:
+
+| Part | Points |
+|---|---|
+| Markdown: the shop's "was" discount, or a drop we saw ourselves in the last 14 days; full marks at 60% off | 45 |
+| Dollars saved; full marks at $200 | 10 |
+| Lowest price we have recorded (after 3 days of tracking) | 15 |
+| Fabric: natural 15, natural with a little stretch 9, unknown 5, synthetic 0 | 15 |
+| Shop tier: premium 15, mid 8 | 15 |
+
+Gazman and Oxford mark most of their range down all the time, so their "was"
+discounts count at half and carry a **Store-wide sale** badge. You can hide
+them in Filters. **Just dropped** means the price fell since an earlier check.
+
+## Run it
+
+You need Python 3.10–3.13 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-pip install uv
+uv sync
+uv run deal_finder
 ```
 
-Next, navigate to your project directory and install the dependencies:
+Open <http://127.0.0.1:8000>. The first start downloads every catalogue,
+which takes about two minutes. After that, shops refresh every 12 hours while
+the app runs, and **Stores → Update Now** refreshes them on demand.
 
-(Optional) Lock the dependencies and install them by using the CLI command:
+Keys are optional. Copy `.env.example` to `.env` to add them:
+
+* `ANTHROPIC_API_KEY` lets the Outfit page read free-text briefs with Claude.
+  That is one small call per new brief, and repeating a brief is free. Without
+  a key, looks like "office" or "summer wedding" use built-in presets, and
+  lists like "navy blazer, white shirt, brown loafers" are read word by word.
+* `SERPER_API_KEY` turns on searching THE ICONIC, David Jones and Country Road.
+
+## The app
+
+* **Deals**: search, category chips, and filters for discount, price, your
+  sizes, fabric, premium shops, or particular shops. Sort by best deal,
+  discount, price or newest. Tap an item to see its price history, sizes in
+  stock (yours highlighted) and why it scored as it did.
+* **Outfit**: describe a look and a budget. You get the best-value piece for
+  each part, within budget and in your sizes, with alternatives to tap and swap.
+* **Saved**: tap the heart to watch a price. Saved items show how much they
+  have moved since you saved them.
+* **Stores**: your sizes, each shop's status, and paid-search usage.
+
+The design follows Apple's Human Interface Guidelines: system font, iOS
+colours with automatic dark mode, grouped lists, segmented controls, switches
+and sheets. It uses a sidebar on wide screens and a tab bar on phones.
+
+![Outfit builder](docs/outfit.jpg)
+
+## Command line
+
 ```bash
-crewai install
+uv run deal_finder sync                          # refresh every shop (free)
+uv run deal_finder sync mjbale peterjackson      # just these
+uv run deal_finder deals linen --category Shirts --min-discount 40
+uv run deal_finder deals --premium --max-price 300
+uv run deal_finder outfit "smart casual dinner, navy and stone" 600
+uv run deal_finder outfit "something for a garden party" 500 --ai
 ```
-### Customizing
 
-**Add your `OPENAI_API_KEY` into the `.env` file**
+## How it fits together
 
-- Modify `src/deal_finder/config/agents.yaml` to define your agents
-- Modify `src/deal_finder/config/tasks.yaml` to define your tasks
-- Modify `src/deal_finder/crew.py` to add your own logic, tools and specific args
-- Modify `src/deal_finder/main.py` to add custom inputs for your agents and tasks
+```
+src/deal_finder/
+├── stores.py      the shops, their tier, and how to tell menswear apart
+├── sync.py        downloads catalogues politely (paged, retried, throttled)
+├── normalize.py   raw product → category, fabric, colour, sizes, price, was price
+├── db.py          SQLite: products, price history, saved items, settings, cache
+├── deals.py       deal score, search and filters, shop mixing
+├── stylist.py     brief → shopping list (presets, keywords, or Claude) → outfit
+├── extra.py       optional paid search for shops that block catalogue reads
+├── main.py        command line
+└── web/           FastAPI app and the front end (plain HTML, CSS and JS)
+```
 
-## Running the Project
+Data lives in `data/deals.db`. Delete it to start afresh.
 
-To kickstart your crew of AI agents and begin task execution, run this from the root folder of your project:
+## Tests
 
 ```bash
-$ crewai run
+uv run pytest
 ```
 
-This command initializes the deal_finder Crew, assembling the agents and assigning them tasks as defined in your configuration.
-
-This example, unmodified, will run the create a `report.md` file with the output of a research on LLMs in the root folder.
-
-## Understanding Your Crew
-
-The deal_finder Crew is composed of multiple AI agents, each with unique roles, goals, and tools. These agents collaborate on a series of tasks, defined in `config/tasks.yaml`, leveraging their collective skills to achieve complex objectives. The `config/agents.yaml` file outlines the capabilities and configurations of each agent in your crew.
-
-## Support
-
-For support, questions, or feedback regarding the DealFinder Crew or crewAI.
-- Visit our [documentation](https://docs.crewai.com)
-- Reach out to us through our [GitHub repository](https://github.com/joaomdmoura/crewai)
-- [Join our Discord](https://discord.com/invite/X4JWnZnxPb)
-- [Chat with our docs](https://chatg.pt/DWjSBZn)
-
-Let's create wonders together with the power and simplicity of crewAI.
+62 tests cover categories, fabric rules, menswear filtering, price tracking,
+scoring, sizes, search, outfits, the Claude call (with a fake client), paid
+search limits and the API. None of them use the network.
