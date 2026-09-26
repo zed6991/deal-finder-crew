@@ -380,7 +380,7 @@ async function dealsView(params) {
     extraBox.append(el("div", { class: "group", style: "margin-top:24px" },
       el("button", { class: "row", style: "width:100%;border:0;background:none;cursor:pointer;text-align:left", onclick: () => runExtra(q, extraBox) },
         el("div", { class: "badge-icon", style: "width:30px;height:30px;border-radius:7px;background:var(--indigo);color:#fff;display:grid;place-items:center" }, icon("search")),
-        el("div", { class: "grow" }, el("span", { text: `Search THE ICONIC, David Jones and Country Road for “${q}”` }),
+        el("div", { class: "grow" }, el("span", { text: `Search Country Road for “${q}”` }),
           el("span", { class: "sub", text: `Paid search · ${status.extra_used_today} of ${status.extra_cap} used today · cached for a day` })),
         icon("chevron", "chev"))));
   }
@@ -420,7 +420,7 @@ async function runExtra(q, box) {
 
 function openFilters(onapply) {
   const draft = structuredClone(filters);
-  const feeds = status.stores.filter((s) => s.kind === "shopify");
+  const feeds = status.stores.filter((s) => s.kind !== "search");
   const storeChips = el("div", { class: "chips" }, feeds.map((s) => {
     const chip = el("button", { type: "button", class: "chip", "aria-pressed": String(draft.store.includes(s.key)), text: s.name });
     chip.addEventListener("click", () => {
@@ -699,7 +699,7 @@ function renderOutfit(r, box) {
     summary, ...slots,
     status.extra && el("div", { class: "group", style: "margin-top:28px" },
       el("button", { class: "row", style: "width:100%;border:0;background:none;cursor:pointer;text-align:left", onclick: () => runExtra(`${r.plan.look} ${r.slots.map((s) => s.slot.category).slice(0, 2).join(" ")}`, extraBox) },
-        el("span", { class: "grow", text: "Also check THE ICONIC, David Jones and Country Road" }), icon("chevron", "chev"))),
+        el("span", { class: "grow", text: "Also check Country Road" }), icon("chevron", "chev"))),
     extraBox);
 }
 
@@ -739,7 +739,7 @@ function storesView() {
   };
   inputs.forEach(([, i]) => i.addEventListener("change", saveSizes));
 
-  const feeds = status.stores.filter((s) => s.kind === "shopify");
+  const feeds = status.stores.filter((s) => s.kind !== "search");
   const searched = status.stores.filter((s) => s.kind === "search");
   const syncBtn = el("button", { class: "text-btn", disabled: isSyncing(), onclick: () => {
     updateShops(feeds.map((s) => s.key));
@@ -809,6 +809,6 @@ window.addEventListener("hashchange", route);
   // Hosted: nothing runs between visits except the daily cron, so opening the
   // app refreshes any shop older than 12 hours. Locally the server does this.
   if (status.hosted && !status.syncing) {
-    updateShops(status.stores.filter((s) => s.kind === "shopify" && s.stale).map((s) => s.key));
+    updateShops(status.stores.filter((s) => s.kind !== "search" && s.stale).map((s) => s.key));
   }
 })();

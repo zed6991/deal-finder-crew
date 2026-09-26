@@ -24,8 +24,14 @@ These shops run on Shopify, which publishes each catalogue with sale and full
 prices. Deal Finder keeps only menswear, and skips gift cards, socks,
 underwear, eyewear and shoe care.
 
-THE ICONIC, David Jones and Country Road block catalogue reads. You can search
-them on request through Serper (optional, about A$0.002 a search, capped per
+THE ICONIC and David Jones have no such feed, so Deal Finder reads their men's
+sale listings instead (`src/deal_finder/scrape.py`): up to about 1,200 items
+from THE ICONIC and 960 from David Jones, the first pages of each. Listings show
+no fabric, and David Jones shows only some sizes, so those items count as
+"size not stated". A shop redesign can break this; the Stores page then shows
+that shop in red.
+
+Country Road blocks catalogue reads. You can search it on request through Serper (optional, about A$0.002 a search, capped per
 day, cached for a day). Only the current price is known for those, so they
 appear beside the scored deals rather than among them.
 
@@ -66,7 +72,7 @@ Keys are optional. Copy `.env.example` to `.env` to add them:
   That is one small call per new brief, and repeating a brief is free. Without
   a key, looks like "office" or "summer wedding" use built-in presets, and
   lists like "navy blazer, white shirt, brown loafers" are read word by word.
-* `SERPER_API_KEY` turns on searching THE ICONIC, David Jones and Country Road.
+* `SERPER_API_KEY` turns on searching Country Road.
 
 ## Host it on Vercel
 

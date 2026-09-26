@@ -91,3 +91,8 @@ def test_shop_overrides(mjbale):
     assert p.category == "Tailoring"
     other = from_shopify(BY_KEY["gazman"], raw("j", "Rain Jacket", 99, ptype="Jackets", vendor="GAZMAN"))
     assert other.category == "Outerwear" and other.brand == "Gazman"
+
+
+def test_dress_boots_are_shoes_not_dresses(mjbale):
+    boot = from_shopify(mjbale, raw("boot", "Talan Chelsea Boot", 169, ptype="Dress Boots"))
+    assert boot is not None and boot.category == "Shoes"

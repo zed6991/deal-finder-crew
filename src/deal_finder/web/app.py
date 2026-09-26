@@ -143,7 +143,7 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
     def sync_store(store: str) -> dict:
         """Refresh one shop and wait for it. The page calls this shop by shop."""
         s = BY_KEY.get(store)
-        if s is None or s.kind != "shopify":
+        if s is None or s.kind == "search":
             raise HTTPException(404, "No such shop")
         return syncer.sync_store(s)
 

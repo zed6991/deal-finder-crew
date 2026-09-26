@@ -1,6 +1,6 @@
 """Optional paid search for shops that block catalogue reads.
 
-THE ICONIC, David Jones and Country Road are searched through Serper's Google
+Country Road is searched through Serper's Google
 Shopping endpoint (about A$0.002 a query; 2,500 free on sign-up). Results are
 cached for a day and queries are capped per day, so costs stay predictable.
 These results carry a current price only, so they are shown beside the

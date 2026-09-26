@@ -75,7 +75,7 @@ def test_paid_search_needs_a_key(client):
 
 def test_sync_one_shop(client):
     assert client.post("/api/sync/mjbale").json() == {"error": "no menswear found in the catalogue"}
-    assert client.post("/api/sync/theiconic").status_code == 404
+    assert client.post("/api/sync/countryroad").status_code == 404
     assert client.post("/api/sync/nope").status_code == 404
 
 
@@ -90,9 +90,9 @@ def test_paid_search_filters_caches_and_caps(db, monkeypatch):
 
         def json(self):
             return {"shopping": [
-                {"title": "Men's Navy Blazer", "source": "THE ICONIC", "price": "A$199.00", "link": "https://www.theiconic.com.au/x"},
+                {"title": "Men's Navy Blazer", "source": "Country Road", "price": "A$199.00", "link": "https://www.countryroad.com.au/x"},
                 {"title": "Navy Blazer", "source": "Some Other Shop", "price": "$99", "link": "https://other/x"},
-                {"title": "Women's Blazer", "source": "David Jones", "price": "$250", "link": "https://www.davidjones.com/y"},
+                {"title": "Women's Blazer", "source": "Country Road", "price": "$250", "link": "https://www.countryroad.com.au/y"},
             ]}
 
     def post(*args, **kwargs):
@@ -100,7 +100,7 @@ def test_paid_search_filters_caches_and_caps(db, monkeypatch):
         return Resp()
 
     first = extra.search(db, "navy blazer", post=post)
-    assert [(i["store"], i["price"]) for i in first["items"]] == [("theiconic", 199.0)]
+    assert [(i["store"], i["price"]) for i in first["items"]] == [("countryroad", 199.0)]
     assert extra.search(db, "navy blazer", post=post)["cached"] is True
     with pytest.raises(RuntimeError, match="limit"):
         extra.search(db, "brown loafers", post=post)

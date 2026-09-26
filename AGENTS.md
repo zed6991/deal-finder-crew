@@ -14,6 +14,10 @@ longer uses CrewAI.
   optional, capped or cached, and shown to the user as paid.
 * Category, gender and skip rules live in `normalize.py`. Rule order matters;
   add a test in `tests/test_normalize.py` for any new case.
+* THE ICONIC and David Jones are read from their men's sale listing pages
+  (`scrape.py`, store kind `listing`). The parsers depend on each site's markup;
+  when one breaks, refresh the markup copies in `tests/test_scrape.py` and fix
+  the parser. Keep page caps low enough for one shop to sync well under 300 s.
 * Scoring lives in `deals.py`; keep the README's scoring table in step with it.
 * The front end follows Apple's Human Interface Guidelines. Reuse the tokens
   and components in `web/static/app.css` (grouped lists, segmented controls,

@@ -12,7 +12,8 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from deal_finder.db import DB, parse_time
-from deal_finder.normalize import Product, from_shopify
+from deal_finder.normalize import Product, from_listing, from_shopify
+from deal_finder.scrape import fetch_listing
 from deal_finder.stores import FEEDS, Store
 
 log = logging.getLogger(__name__)
@@ -58,14 +59,20 @@ def fetch_shopify(store: Store, session: requests.Session | None = None, pause: 
     return products
 
 
+def fetch_catalogue(store: Store) -> list[dict]:
+    """A shop's raw products, read the way that shop allows."""
+    return fetch_listing(store) if store.kind == "listing" else fetch_shopify(store)
+
+
 def normalise(store: Store, raw: Iterable[dict]) -> list[Product]:
-    return [p for p in (from_shopify(store, r) for r in raw) if p]
+    convert = from_listing if store.kind == "listing" else from_shopify
+    return [p for p in (convert(store, r) for r in raw) if p]
 
 
 class Syncer:
     """Keeps the catalogue fresh. One sync runs at a time."""
 
-    def __init__(self, db: DB, fetch: Callable[[Store], list[dict]] = fetch_shopify) -> None:
+    def __init__(self, db: DB, fetch: Callable[[Store], list[dict]] = fetch_catalogue) -> None:
         self.db = db
         self.fetch = fetch
         self._lock = threading.Lock()

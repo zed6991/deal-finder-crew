@@ -38,7 +38,7 @@ _RULES_RE = [(c, re.compile(p, re.I)) for c, p in _RULES]
 _SKIP = re.compile(
     r"gift ?card|underwear|\bbriefs?\b|\btrunks?\b|\bsocks?\b|sleepwear|pyjama|"
     r"fragrance|candle|\bhome\b|kids|junior|optical|sunglass|\bsun\b|eyewear|"
-    r"dress(?:es)?\b(?! (?:shirt|shoe|pant|trouser))|\bskirt|\bbra\b|bikini|"
+    r"dress(?:es)?\b(?! (?:shirt|shoe|boot|pant|trouser))|\bskirt|\bbra\b|bikini|"
     r"alteration|voucher|sample|\bdonation|shipping protection|insurance|"
     r"\bbrush\b|shoe care|\bpolish\b|shoe tree|\blaces\b|insole|protector|\bcleaner\b|shoe horn",
     re.I,
@@ -237,4 +237,39 @@ def from_shopify(store: Store, raw: dict) -> Product | None:
         was_price=was,
         in_stock=bool(live),
         tags=[t for t in tags if len(t) < 60][:40],
+    )
+
+
+def from_listing(store: Store, raw: dict) -> Product | None:
+    """Normalise one scraped sale-listing card (see `scrape.py`), or None if it is not wanted.
+
+    Listings come from men's pages, so gender is already settled; they carry
+    no fabric, so the fabric verdict stays unknown.
+    """
+    title = html.unescape(raw.get("title") or "").strip()
+    hint = raw.get("hint") or ""
+    price = _money(raw.get("price"))
+    if not title or not price or _SKIP.search(f"{hint} {title}"):
+        return None
+    if _WOMENS.search(title) and not _MENS.search(title):
+        return None
+    category = category_of(title, hint)
+    if not category:
+        return None
+    was = _money(raw.get("was"))
+    return Product(
+        id=f"{store.key}:{raw['id']}",
+        store=store.key,
+        brand=(raw.get("brand") or "").strip() or store.name,
+        title=title,
+        url=raw["url"],
+        image=raw.get("image"),
+        category=category,
+        colour=None,
+        composition=None,
+        fabric="unknown",
+        sizes=[s for s in raw.get("sizes") or [] if not ONE_SIZE.match(s)],
+        price=price,
+        was_price=was if was and was > price else None,
+        in_stock=True,
     )
