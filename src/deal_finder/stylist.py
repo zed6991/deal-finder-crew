@@ -1,8 +1,8 @@
 """Turn a style brief into a shopping list, then fill it from the catalogue.
 
 Reading the brief is free by default (presets and keyword rules). With an
-Anthropic API key it can use one small Claude call instead, cached per brief so
-asking again costs nothing.
+Anthropic API key (or an OpenRouter key) it can use one small Claude call
+instead, cached per brief so asking again costs nothing.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ Category = Literal[
     "Outerwear", "Trousers", "Jeans", "Shorts", "Swim", "Shoes", "Accessories",
 ]
 MODEL = os.environ.get("DEAL_FINDER_MODEL", "claude-opus-5")
+OPENROUTER_URL = "https://openrouter.ai/api"
 
 
 class Slot(BaseModel):
@@ -109,8 +110,25 @@ def plan_free(brief: str) -> Plan:
     )
 
 
-def ai_available() -> bool:
+def _anthropic_key() -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+
+
+def _use_openrouter() -> bool:
+    """An OpenRouter key wins, so a stray ANTHROPIC_API_KEY cannot shadow it."""
+    return bool(os.environ.get("OPENROUTER_API_KEY"))
+
+
+def ai_available() -> bool:
+    return _anthropic_key() or _use_openrouter()
+
+
+def openrouter_model() -> str:
+    return os.environ.get("OPENROUTER_MODEL", f"anthropic/{MODEL}")
+
+
+def ai_model() -> str:
+    return openrouter_model() if _use_openrouter() else MODEL
 
 
 SYSTEM = f"""You are a menswear stylist planning a small outfit from Australian shops.
@@ -121,12 +139,7 @@ colours that suit the brief. Set fabric to "natural" only if the shopper asks
 for natural fibres, "stretch" if they allow a little stretch, else "any"."""
 
 
-def plan_ai(brief: str, db: DB | None = None) -> Plan:
-    """One Claude call, cached per brief. Falls back to the free reading."""
-    key = "plan:" + hashlib.sha256(f"{MODEL}|{brief.strip().lower()}".encode()).hexdigest()[:24]
-    if db and (hit := db.get(key)):
-        return Plan.model_validate(hit)
-
+def _ask_anthropic(brief: str) -> Plan | None:
     import anthropic
 
     client = anthropic.Anthropic()
@@ -140,7 +153,36 @@ def plan_ai(brief: str, db: DB | None = None) -> Plan:
         messages=[{"role": "user", "content": brief}],
         output_format=Plan,
     )
-    plan = response.parsed_output if response.stop_reason != "refusal" else None
+    return response.parsed_output if response.stop_reason != "refusal" else None
+
+
+def _ask_openrouter(brief: str) -> Plan | None:
+    """OpenRouter speaks the Messages API but not Anthropic's betas, so the
+    plan comes back through a forced tool call instead of structured output."""
+    import anthropic
+
+    client = anthropic.Anthropic(base_url=OPENROUTER_URL, auth_token=os.environ["OPENROUTER_API_KEY"], api_key=None)
+    schema = Plan.model_json_schema()
+    schema["properties"].pop("source", None)
+    response = client.messages.create(
+        model=openrouter_model(),
+        max_tokens=4000,
+        system=SYSTEM,
+        messages=[{"role": "user", "content": brief}],
+        tools=[{"name": "plan_outfit", "description": "Record the outfit plan.", "input_schema": schema}],
+        tool_choice={"type": "tool", "name": "plan_outfit"},
+    )
+    block = next((b for b in response.content if getattr(b, "type", "") == "tool_use"), None)
+    return Plan.model_validate(block.input) if block else None
+
+
+def plan_ai(brief: str, db: DB | None = None) -> Plan:
+    """One Claude call, cached per brief. Falls back to the free reading."""
+    key = "plan:" + hashlib.sha256(f"{ai_model()}|{brief.strip().lower()}".encode()).hexdigest()[:24]
+    if db and (hit := db.get(key)):
+        return Plan.model_validate(hit)
+
+    plan = _ask_openrouter(brief) if _use_openrouter() else _ask_anthropic(brief)
     if plan is None or not plan.slots:
         return plan_free(brief)
     plan = plan.model_copy(update={"source": "ai", "slots": plan.slots[:7]})

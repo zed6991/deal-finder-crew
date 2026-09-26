@@ -1,3 +1,5 @@
+import pytest
+
 from deal_finder import stylist
 from deal_finder.deals import Filters
 from deal_finder.normalize import from_shopify
@@ -5,6 +7,11 @@ from deal_finder.stores import BY_KEY
 from deal_finder.stylist import Plan, Slot, build_outfit, plan_for, plan_free
 
 from .conftest import raw
+
+
+@pytest.fixture(autouse=True)
+def _no_real_openrouter_key(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
 
 def test_presets():
@@ -107,3 +114,38 @@ def test_ai_refusal_falls_back_to_free_reading(db, monkeypatch):
     monkeypatch.setattr(anthropic, "Anthropic", lambda: FakeClient(None, stop="refusal"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
     assert plan_for("office", db, use_ai=True).source == "preset"
+
+
+class FakeOpenRouterClient:
+    def __init__(self, plan: dict):
+        self.calls = []
+        outer = self
+
+        class Messages:
+            def create(self, **kwargs):
+                outer.calls.append(kwargs)
+                block = type("B", (), {"type": "tool_use", "name": "plan_outfit", "input": plan})()
+                return type("R", (), {"stop_reason": "tool_use", "content": [block]})()
+
+        self.messages = Messages()
+
+
+def test_openrouter_key_turns_ai_on_and_routes_through_openrouter(db, monkeypatch):
+    import anthropic
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "stale")  # an OpenRouter key still wins
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test")
+    fake = FakeOpenRouterClient({"look": "Long lunch", "slots": [{"category": "Shirts", "keywords": ["linen"]}]})
+    made = []
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kw: made.append(kw) or fake)
+
+    assert stylist.ai_available()
+    plan = plan_for("linen for a long lunch", db, use_ai=True)
+    assert plan.source == "ai" and plan.look == "Long lunch"
+    assert made[0]["base_url"] == "https://openrouter.ai/api" and made[0]["auth_token"] == "or-test"
+    call = fake.calls[0]
+    assert call["model"] == stylist.openrouter_model()
+    assert call["tool_choice"] == {"type": "tool", "name": "plan_outfit"}
+
+    plan_for("linen for a long lunch", db, use_ai=True)
+    assert len(fake.calls) == 1  # cached

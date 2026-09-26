@@ -70,6 +70,8 @@ the app runs, and **Stores → Update Now** refreshes them on demand.
 Keys are optional. Copy `.env.example` to `.env` to add them:
 
 * `ANTHROPIC_API_KEY` lets the Outfit page read free-text briefs with Claude.
+  `OPENROUTER_API_KEY` does the same through OpenRouter (set
+  `OPENROUTER_MODEL` to pick a different model).
   That is one small call per new brief, and repeating a brief is free. Without
   a key, looks like "office" or "summer wedding" use built-in presets, and
   lists like "navy blazer, white shirt, brown loafers" are read word by word.

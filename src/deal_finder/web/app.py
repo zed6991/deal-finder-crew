@@ -128,7 +128,7 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
             "size_groups": {g: cats for g, cats in SIZE_GROUPS.items()},
             "settings": settings(),
             "ai": stylist.ai_available(),
-            "ai_model": stylist.MODEL,
+            "ai_model": stylist.ai_model(),
             "extra": extra.available(),
             "extra_used_today": extra.used_today(db),
             "extra_cap": extra.DAILY_CAP,
