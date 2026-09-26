@@ -19,7 +19,9 @@ longer uses CrewAI.
   when one breaks, refresh the markup copies in `tests/test_scrape.py` and fix
   the parser. Keep page caps low enough for one shop to sync well under 300 s.
 * Scoring lives in `deals.py`; keep the README's scoring table in step with it.
-* The front end follows Apple's Human Interface Guidelines. Reuse the tokens
-  and components in `web/static/app.css` (grouped lists, segmented controls,
-  switches, sheets) rather than adding new styles.
+* The front end follows Apple's Human Interface Guidelines in the Liquid Glass
+  style (iOS 26): navigation and controls float on the glass material
+  (`--glass*` tokens, one shared rule in `app.css`); content stays solid.
+  Reuse the tokens and components in `web/static/app.css` (grouped lists,
+  segmented controls, switches, sheets) rather than adding new styles.
 * Claude calls go through the official `anthropic` SDK (`stylist.py`).
