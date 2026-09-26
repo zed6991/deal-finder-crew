@@ -30,10 +30,11 @@ HEADERS = {
 }
 
 # (listing path, most pages to read). Pages are ~60 items at THE ICONIC and
-# 24 at David Jones; the caps keep one shop's sync well under a minute or two.
+# 24 at David Jones. Shoe sales are read in full (about 30 and 33 pages);
+# clothing is capped so one shop's sync stays well under Vercel's 300 s limit.
 LISTINGS: dict[str, list[tuple[str, int]]] = {
-    "theiconic": [("/mens-clothing-sale/", 15), ("/mens-shoes-sale/", 5)],
-    "davidjones": [("/sale/men", 40)],
+    "theiconic": [("/mens-shoes-sale/", 35), ("/mens-clothing-sale/", 15)],
+    "davidjones": [("/sale/men/shoes", 40), ("/sale/men/clothing", 30)],
 }
 
 

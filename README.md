@@ -25,8 +25,9 @@ prices. Deal Finder keeps only menswear, and skips gift cards, socks,
 underwear, eyewear and shoe care.
 
 THE ICONIC and David Jones have no such feed, so Deal Finder reads their men's
-sale listings instead (`src/deal_finder/scrape.py`): up to about 1,200 items
-from THE ICONIC and 960 from David Jones, the first pages of each. Listings show
+sale listings instead (`src/deal_finder/scrape.py`): every shoe on sale at
+both, plus the first pages of their clothing sales (about 2,600 items from
+THE ICONIC and 1,500 from David Jones, a couple of minutes each). Listings show
 no fabric, and David Jones shows only some sizes, so those items count as
 "size not stated". A shop redesign can break this; the Stores page then shows
 that shop in red.

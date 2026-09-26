@@ -72,6 +72,9 @@ def test_search_filters(db):
     assert titles(Filters(categories=["Trousers"], my_sizes=True), {"bottoms": "32"}) == []
     assert titles(Filters(categories=["Trousers"], my_sizes=True), {"bottoms": "32, 34"}) == ["Stone Chino"]
     assert "Sold Out Crew" not in titles(Filters())
+    assert set(titles(Filters(min_price=90))) == {"Navy Merino Crew", "Grey Crew"}
+    assert titles(Filters(min_price=90, max_price=95)) == []
+    assert titles(Filters(max_price=90)) == ["Stone Chino"]
 
 
 @pytest.mark.parametrize(("wanted", "available", "ok"), [

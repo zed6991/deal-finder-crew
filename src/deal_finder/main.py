@@ -60,7 +60,7 @@ def deals(args) -> None:
     db = _db()
     f = Filters(
         q=" ".join(args.words), categories=args.category or [], min_discount=args.min_discount,
-        max_price=args.max_price, premium_only=args.premium, limit=args.limit,
+        min_price=args.min_price, max_price=args.max_price, premium_only=args.premium, limit=args.limit,
     )
     r = search(db, f)
     if not r["total"]:
@@ -106,6 +106,7 @@ def cli() -> None:
     s.add_argument("words", nargs="*")
     s.add_argument("--category", nargs="*", choices=CATEGORIES)
     s.add_argument("--min-discount", type=int, default=0)
+    s.add_argument("--min-price", type=float)
     s.add_argument("--max-price", type=float)
     s.add_argument("--premium", action="store_true", help="premium shops only")
     s.add_argument("--limit", type=int, default=20)

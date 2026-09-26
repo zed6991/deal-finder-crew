@@ -291,7 +291,7 @@ function skeletonGrid(n = 8) {
 // ── Deals ───────────────────────────────────────────────────
 
 const DEFAULT_FILTERS = {
-  q: "", category: [], store: [], min_discount: 0, max_price: "", fabric: "any",
+  q: "", category: [], store: [], min_discount: 0, min_price: "", max_price: "", fabric: "any",
   my_sizes: false, premium_only: false, include_storewide: true, sort: "score",
 };
 let filters = { ...DEFAULT_FILTERS, ...local.get("df.filters", {}) };
@@ -300,7 +300,7 @@ function filterCount() {
   let n = 0;
   if (filters.store.length) n++;
   if (Number(filters.min_discount)) n++;
-  if (filters.max_price) n++;
+  if (Number(filters.min_price) > 0 || Number(filters.max_price) > 0) n++;
   if (filters.fabric !== "any") n++;
   if (filters.my_sizes) n++;
   if (filters.premium_only) n++;
@@ -313,7 +313,9 @@ function queryString(f, offset = 0) {
   if (f.q) p.set("q", f.q);
   f.category.forEach((c) => p.append("category", c));
   f.store.forEach((s) => p.append("store", s));
-  for (const k of ["min_discount", "max_price", "fabric", "sort"]) if (f[k] !== "" && f[k] != null) p.set(k, f[k]);
+  for (const k of ["min_discount", "fabric", "sort"]) if (f[k] !== "" && f[k] != null) p.set(k, f[k]);
+  // An empty or zero price means no limit.
+  for (const k of ["min_price", "max_price"]) if (Number(f[k]) > 0) p.set(k, Number(f[k]));
   for (const k of ["my_sizes", "premium_only", "include_storewide"]) p.set(k, f[k]);
   p.set("limit", 48);
   p.set("offset", offset);
@@ -429,8 +431,13 @@ function openFilters(onapply) {
     });
     return chip;
   }));
-  const maxPrice = el("input", { type: "number", inputmode: "numeric", min: 0, step: 10, placeholder: "Any", value: draft.max_price, "aria-label": "Maximum price" });
-  maxPrice.addEventListener("input", () => { draft.max_price = maxPrice.value; });
+  const priceInput = (key, label) => {
+    const input = el("input", { type: "number", inputmode: "numeric", min: 0, step: 10, placeholder: "Any", value: Number(draft[key]) > 0 ? draft[key] : "", "aria-label": label });
+    input.addEventListener("input", () => { draft[key] = input.value; });
+    return input;
+  };
+  const minPrice = priceInput("min_price", "Minimum price");
+  const maxPrice = priceInput("max_price", "Maximum price");
   const sizesSet = Object.values(status.settings.sizes).some(Boolean);
 
   openSheet("Filters", [
@@ -441,6 +448,7 @@ function openFilters(onapply) {
         toggle(draft.include_storewide, (v) => { draft.include_storewide = v; }, "Include store-wide sales"))),
     el("div", { class: "group-label", text: "Price and fit" }),
     el("div", { class: "group" },
+      el("div", { class: "row" }, el("span", { text: "From" }), el("span", { class: "money-field" }, "$", minPrice)),
       el("div", { class: "row" }, el("span", { text: "Up to" }), el("span", { class: "money-field" }, "$", maxPrice)),
       el("div", { class: "row" }, el("div", { class: "grow" }, "In my sizes", el("span", { class: "sub", text: sizesSet ? "Uses the sizes saved in Stores" : "Set your sizes in Stores first" })),
         toggle(draft.my_sizes, (v) => { draft.my_sizes = v; }, "In my sizes"))),

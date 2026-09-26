@@ -162,7 +162,8 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
         category: list[str] = Query(default=[]),
         store: list[str] = Query(default=[]),
         min_discount: int = Query(0, ge=0, le=95),
-        max_price: float | None = Query(None, gt=0),
+        min_price: float | None = Query(None, ge=0),
+        max_price: float | None = Query(None, ge=0),
         fabric: Literal["any", "natural", "stretch"] = "any",
         my_sizes: bool = False,
         premium_only: bool = False,
@@ -173,7 +174,7 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
     ) -> dict:
         f = Filters(
             q=q[:100], categories=[c for c in category if c in CATEGORIES], stores=store,
-            min_discount=min_discount, max_price=max_price, fabric=fabric, my_sizes=my_sizes,
+            min_discount=min_discount, min_price=min_price, max_price=max_price, fabric=fabric, my_sizes=my_sizes,
             premium_only=premium_only, include_storewide=include_storewide, sort=sort,
             limit=limit, offset=offset,
         )

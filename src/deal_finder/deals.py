@@ -44,6 +44,7 @@ class Filters:
     categories: list[str] = field(default_factory=list)
     stores: list[str] = field(default_factory=list)
     min_discount: int = 0
+    min_price: float | None = None
     max_price: float | None = None
     fabric: str = "any"  # any | natural | stretch (natural + stretch)
     my_sizes: bool = False
@@ -159,6 +160,8 @@ def search(db: DB, f: Filters, sizes: dict[str, str] | None = None) -> dict:
         if cats and r["category"] not in cats:
             return False
         if stores and r["store"] not in stores:
+            return False
+        if f.min_price and r["price"] < f.min_price:
             return False
         if f.max_price and r["price"] > f.max_price:
             return False
