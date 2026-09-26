@@ -1,101 +1,202 @@
-"""The web app: a JSON API and the static front end."""
+"""JSON API and the static front end."""
 
 from __future__ import annotations
 
-import queue
-import threading
 from pathlib import Path
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-from deal_finder.models import CATEGORIES, REGIONS, HuntRequest
-from deal_finder.scoring import to_markdown
-from deal_finder.service import Hunt, HuntStore, execute, load_sample, missing_keys, run_crew
+from deal_finder import extra, stylist
+from deal_finder.db import DB
+from deal_finder.deals import SIZE_GROUPS, Filters, sale_shares, score_row, search
+from deal_finder.normalize import CATEGORIES
+from deal_finder.stores import BY_KEY, FEEDS, SEARCHED, STORES
+from deal_finder.sync import Syncer
 
 STATIC = Path(__file__).parent / "static"
+DEFAULT_SETTINGS = {"sizes": {g: "" for g in SIZE_GROUPS}}
 
 
-class Worker:
-    """Runs hunts one at a time, in the order they were asked for."""
-
-    def __init__(self, store: HuntStore, runner=run_crew) -> None:
-        self.store = store
-        self.runner = runner
-        self.jobs: queue.Queue[str] = queue.Queue()
-        threading.Thread(target=self._loop, daemon=True, name="hunt-worker").start()
-
-    def submit(self, hunt: Hunt) -> None:
-        self.store.save(hunt)
-        self.jobs.put(hunt.id)
-
-    def _loop(self) -> None:
-        while True:
-            hunt_id = self.jobs.get()
-            try:
-                execute(self.store.get(hunt_id), self.store, self.runner)
-            except KeyError:
-                pass  # deleted while queued
+class Settings(BaseModel):
+    sizes: dict[str, str] = Field(default_factory=dict)
 
 
-def create_app(store: HuntStore | None = None, runner=run_crew, check_keys=missing_keys) -> FastAPI:
-    store = store or HuntStore()
-    worker = Worker(store, runner)
+class OutfitRequest(BaseModel):
+    brief: str = Field(min_length=2, max_length=400)
+    budget: float = Field(gt=0, le=20_000)
+    use_ai: bool = False
+    my_sizes: bool = True
+    premium_only: bool = False
+    fabric: Literal["any", "natural", "stretch"] = "any"
+    include_storewide: bool = True
+    stores: list[str] = Field(default_factory=list)
+
+
+class SyncRequest(BaseModel):
+    stores: list[str] = Field(default_factory=list)
+
+
+def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bool = True) -> FastAPI:
+    db = db or DB()
+    syncer = syncer or Syncer(db)
     app = FastAPI(title="Deal Finder", docs_url="/api/docs")
+    if auto_sync:
+        syncer.keep_fresh()
 
-    # Hunts cut short by a restart can never finish; say so.
-    for h in store.all():
-        if h.status in ("queued", "running"):
-            h.status, h.error = "failed", "Stopped when the server restarted."
-            store.save(h)
+    def settings() -> dict:
+        s = db.get("settings", DEFAULT_SETTINGS)
+        return {"sizes": {**DEFAULT_SETTINGS["sizes"], **s.get("sizes", {})}}
 
-    @app.get("/api/config")
-    def config() -> dict:
+    def item(pid: str) -> dict:
+        row = db.product(pid)
+        if row is None:
+            raise HTTPException(404, "No such product")
+        return score_row(row, sale_shares(db))
+
+    @app.get("/api/status")
+    def status() -> dict:
+        syncs = db.syncs()
+        counts = {r["store"]: (r["n"], r["deals"]) for r in db.query(
+            "SELECT store, COUNT(*) n, SUM(was_price IS NOT NULL) deals FROM products "
+            "WHERE active = 1 AND in_stock = 1 GROUP BY store")}
+        shares = sale_shares(db)
+        stores = []
+        for s in STORES:
+            sync = syncs.get(s.key)
+            n, deals = counts.get(s.key, (0, 0))
+            stores.append({
+                "key": s.key, "name": s.name, "tier": s.tier, "kind": s.kind, "domain": s.domain,
+                "products": n, "on_sale": deals or 0,
+                "storewide": shares.get(s.key, 0) >= 0.6,
+                "synced_at": sync["at"] if sync else None,
+                "ok": bool(sync["ok"]) if sync else None,
+                "error": sync["error"] if sync else None,
+                "syncing": s.key in syncer.running,
+            })
         return {
-            "regions": [r.model_dump() for r in REGIONS.values()],
+            "stores": stores,
             "categories": CATEGORIES,
-            "missing_keys": check_keys(),
+            "size_groups": {g: cats for g, cats in SIZE_GROUPS.items()},
+            "settings": settings(),
+            "ai": stylist.ai_available(),
+            "ai_model": stylist.MODEL,
+            "extra": extra.available(),
+            "extra_used_today": extra.used_today(db),
+            "extra_cap": extra.DAILY_CAP,
+            "syncing": bool(syncer.running),
+            "empty": not counts,
         }
 
-    @app.get("/api/hunts")
-    def list_hunts() -> list[dict]:
-        return [h.summary() for h in store.all()]
+    @app.post("/api/sync", status_code=202)
+    def start_sync(body: SyncRequest) -> dict:
+        stores = [BY_KEY[k] for k in body.stores if k in BY_KEY and BY_KEY[k].kind == "shopify"] or FEEDS
+        return {"started": syncer.sync_in_background(stores)}
 
-    @app.post("/api/hunts", status_code=202)
-    def start_hunt(request: HuntRequest) -> dict:
-        if missing := check_keys():
-            raise HTTPException(400, f"Add {', '.join(missing)} to your .env file first.")
-        hunt = Hunt(request=request)
-        worker.submit(hunt)
-        return hunt.summary()
+    @app.get("/api/deals")
+    def deals(
+        q: str = "",
+        category: list[str] = Query(default=[]),
+        store: list[str] = Query(default=[]),
+        min_discount: int = Query(0, ge=0, le=95),
+        max_price: float | None = Query(None, gt=0),
+        fabric: Literal["any", "natural", "stretch"] = "any",
+        my_sizes: bool = False,
+        premium_only: bool = False,
+        include_storewide: bool = True,
+        sort: Literal["score", "discount", "price", "price_desc", "newest"] = "score",
+        limit: int = Query(48, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+    ) -> dict:
+        f = Filters(
+            q=q[:100], categories=[c for c in category if c in CATEGORIES], stores=store,
+            min_discount=min_discount, max_price=max_price, fabric=fabric, my_sizes=my_sizes,
+            premium_only=premium_only, include_storewide=include_storewide, sort=sort,
+            limit=limit, offset=offset,
+        )
+        result = search(db, f, settings()["sizes"])
+        saved = db.saved()
+        for d in result["items"]:
+            d["saved"] = d["id"] in saved
+        return result
 
-    @app.post("/api/hunts/sample", status_code=201)
-    def add_sample() -> dict:
-        hunt = load_sample()
-        store.save(hunt)
-        return hunt.summary()
+    @app.get("/api/products/{pid:path}")
+    def product(pid: str) -> dict:
+        d = item(pid)
+        saved = db.saved().get(pid)
+        d["history"] = db.history(pid)
+        d["saved"] = bool(saved)
+        d["saved_price"] = saved["saved_price"] if saved else None
+        return d
 
-    @app.get("/api/hunts/{hunt_id}")
-    def get_hunt(hunt_id: str) -> Hunt:
+    @app.get("/api/saved")
+    def saved_items() -> list[dict]:
+        out = []
+        shares = sale_shares(db)
+        for pid, s in db.saved().items():
+            row = db.product(pid)
+            if row is None:
+                continue
+            d = score_row(row, shares)
+            d["saved"] = True
+            d["saved_price"] = s["saved_price"]
+            d["saved_at"] = s["saved_at"]
+            d["change"] = round(d["price"] - s["saved_price"], 2)
+            d["active"] = bool(row["active"])
+            out.append(d)
+        return out
+
+    @app.put("/api/saved/{pid:path}", status_code=204)
+    def save(pid: str) -> None:
         try:
-            return store.get(hunt_id)
+            db.save(pid)
         except KeyError:
-            raise HTTPException(404, "No such hunt") from None
+            raise HTTPException(404, "No such product") from None
 
-    @app.get("/api/hunts/{hunt_id}/markdown", response_class=PlainTextResponse)
-    def hunt_markdown(hunt_id: str) -> str:
-        hunt = get_hunt(hunt_id)
-        if not hunt.report:
-            raise HTTPException(409, "This hunt has no results yet")
-        return to_markdown(hunt.report, hunt.request.region_info.symbol)
+    @app.delete("/api/saved/{pid:path}", status_code=204)
+    def unsave(pid: str) -> None:
+        db.unsave(pid)
 
-    @app.delete("/api/hunts/{hunt_id}", status_code=204)
-    def delete_hunt(hunt_id: str) -> None:
+    @app.get("/api/settings")
+    def get_settings() -> dict:
+        return settings()
+
+    @app.put("/api/settings")
+    def put_settings(body: Settings) -> dict:
+        sizes = {g: (body.sizes.get(g) or "").strip()[:60] for g in SIZE_GROUPS}
+        db.put("settings", {"sizes": sizes})
+        return settings()
+
+    @app.post("/api/outfit")
+    def outfit(body: OutfitRequest) -> dict:
+        plan = stylist.plan_for(body.brief, db, use_ai=body.use_ai)
+        base = Filters(
+            stores=body.stores, fabric=body.fabric, my_sizes=body.my_sizes,
+            premium_only=body.premium_only, include_storewide=body.include_storewide,
+        )
+        result = stylist.build_outfit(db, plan, body.budget, settings()["sizes"], base)
+        saved = db.saved()
+        for slot in result["slots"]:
+            for d in [slot["pick"], *slot["alternates"]]:
+                if d:
+                    d["saved"] = d["id"] in saved
+        return result
+
+    @app.get("/api/extra")
+    def extra_search(q: str = Query(min_length=2, max_length=120)) -> dict:
         try:
-            store.delete(hunt_id)
-        except KeyError:
-            raise HTTPException(404, "No such hunt") from None
+            return extra.search(db, q)
+        except RuntimeError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except Exception as exc:
+            raise HTTPException(502, f"Search failed: {exc}") from None
+
+    @app.get("/api/searched-stores")
+    def searched_stores() -> list[dict]:
+        return [{"key": s.key, "name": s.name} for s in SEARCHED]
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:

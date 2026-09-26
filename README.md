@@ -1,107 +1,118 @@
 # Deal Finder
 
-Find good deals on menswear. Describe a look, set a budget, and a crew of AI
-agents plans the outfit, hunts for sale prices, checks each price on the
-retailer's own page, and hands back the best buys that fit your budget.
+Find genuine markdowns on mid-to-premium menswear from Australian shops.
 
-![Results on desktop](docs/results.jpg)
+Deal Finder reads the full public catalogues of 13 shops for free, keeps every
+price it sees, and ranks what is actually a good buy. There are no AI agents
+and no search costs unless you turn them on.
 
-<img src="docs/phone-sheet.jpg" width="280" alt="A deal on a phone">
+![Deals on desktop](docs/deals.jpg)
 
-*Screenshots use made-up products to show the layout.*
+<p>
+<img src="docs/phone-deals.jpg" width="260" alt="Deals on a phone">
+<img src="docs/phone-product.jpg" width="260" alt="A product with its price history">
+</p>
 
-## How it works
+## Shops
 
-| Step | Who | What |
-|---|---|---|
-| 1. Plan | Stylist agent | Turns your brief into 4–8 garments, with fabric, colour, fit and search queries. |
-| 2. Hunt | Deal hunter agent | Searches Google Shopping (via Serper) for each garment, favouring markdowns. |
-| 3. Check | Price checker agent | Opens each product page and reads the price, the "was" price, fabric and stock. |
-| 4. Judge | Curator agent | Scores how well each product suits the brief, with a one-line reason. |
-| 5. Pick | Plain Python | Works out discounts, applies your fabric and discount rules, scores every deal, and picks one item per garment within budget. |
+| Free: full catalogue, every price change | Tier |
+|---|---|
+| M.J. Bale, P. Johnson, Harrolds, Aquila, Venroy, Bassike, Calibre | Premium |
+| Peter Jackson, Industrie, Academy Brand, Jac+Jack, Oxford, Gazman | Mid |
 
-Step 5 is ordinary code, not a model, so the sums are always right. It also
-drops any link that no search or page tool actually returned, so the agents
-cannot slip in made-up products.
+These shops run on Shopify, which publishes each catalogue with sale and full
+prices. Deal Finder keeps only menswear, and skips gift cards, socks,
+underwear, eyewear and shoe care.
 
-### Deal score (0–100)
+THE ICONIC, David Jones and Country Road block catalogue reads. You can search
+them on request through Serper (optional, about A$0.002 a search, capped per
+day, cached for a day). Only the current price is known for those, so they
+appear beside the scored deals rather than among them.
 
-* Discount: up to 45 points (maxes out at 60% off)
-* Style fit, judged by the curator: up to 35
-* Price checked on the product page: 10
-* Fabric: 10 natural, 6 stretch blend, 3 unknown
+To add a Shopify shop, add one line to `src/deal_finder/stores.py`.
 
-75 and up is a **Great deal**, 55 and up a **Good deal**.
+## What counts as a good deal
 
-## Set up
+Each item gets a score out of 100:
+
+| Part | Points |
+|---|---|
+| Markdown: the shop's "was" discount, or a drop we saw ourselves in the last 14 days; full marks at 60% off | 45 |
+| Dollars saved; full marks at $200 | 10 |
+| Lowest price we have recorded (after 3 days of tracking) | 15 |
+| Fabric: natural 15, natural with a little stretch 9, unknown 5, synthetic 0 | 15 |
+| Shop tier: premium 15, mid 8 | 15 |
+
+Gazman and Oxford mark most of their range down all the time, so their "was"
+discounts count at half and carry a **Store-wide sale** badge. You can hide
+them in Filters. **Just dropped** means the price fell since an earlier check.
+
+## Run it
 
 You need Python 3.10–3.13 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync
-cp .env.example .env    # then add your keys
+uv run deal_finder
 ```
 
-Keys:
+Open <http://127.0.0.1:8000>. The first start downloads every catalogue,
+which takes about two minutes. After that, shops refresh every 12 hours while
+the app runs, and **Stores → Update Now** refreshes them on demand.
 
-* `SERPER_API_KEY`: search results, from [serper.dev](https://serper.dev) (free tier available).
-* A model key, such as `OPENAI_API_KEY`. Set `MODEL` to choose the model; any
-  CrewAI model string works (`openai/gpt-4o-mini`, `anthropic/claude-sonnet-5`, `ollama/llama3.1`…).
+Keys are optional. Copy `.env.example` to `.env` to add them:
 
-## Use the app
+* `ANTHROPIC_API_KEY` lets the Outfit page read free-text briefs with Claude.
+  That is one small call per new brief, and repeating a brief is free. Without
+  a key, looks like "office" or "summer wedding" use built-in presets, and
+  lists like "navy blazer, white shirt, brown loafers" are read word by word.
+* `SERPER_API_KEY` turns on searching THE ICONIC, David Jones and Country Road.
+
+## The app
+
+* **Deals**: search, category chips, and filters for discount, price, your
+  sizes, fabric, premium shops, or particular shops. Sort by best deal,
+  discount, price or newest. Tap an item to see its price history, sizes in
+  stock (yours highlighted) and why it scored as it did.
+* **Outfit**: describe a look and a budget. You get the best-value piece for
+  each part, within budget and in your sizes, with alternatives to tap and swap.
+* **Saved**: tap the heart to watch a price. Saved items show how much they
+  have moved since you saved them.
+* **Stores**: your sizes, each shop's status, and paid-search usage.
+
+The design follows Apple's Human Interface Guidelines: system font, iOS
+colours with automatic dark mode, grouped lists, segmented controls, switches
+and sheets. It uses a sidebar on wide screens and a tab bar on phones.
+
+![Outfit builder](docs/outfit.jpg)
+
+## Command line
 
 ```bash
-uv run deal_finder serve
+uv run deal_finder sync                          # refresh every shop (free)
+uv run deal_finder sync mjbale peterjackson      # just these
+uv run deal_finder deals linen --category Shirts --min-discount 40
+uv run deal_finder deals --premium --max-price 300
+uv run deal_finder outfit "smart casual dinner, navy and stone" 600
+uv run deal_finder outfit "something for a garden party" 500 --ai
 ```
 
-Then open <http://127.0.0.1:8000>.
-
-* **New Hunt**: write a brief, or tap an idea. Set budget, region, sizes,
-  fabric rule (natural only, stretch OK, any), minimum discount and categories.
-* **Live progress**: see each stage, searches run and pages checked.
-* **Results**: your picks against the budget, total saved, and three tabs.
-  *Picks* is the outfit within budget, *All* is every deal that passed your
-  rules, and *Passed* shows what was ruled out and why. Sort by best deal,
-  discount, saving or price. Tap a card for details, then buy, save or copy the link.
-* **Saved**: tap the heart on any deal. Saved deals stay in your browser.
-* **Export**: download any hunt as a Markdown buyer's guide.
-
-Without keys, the app still opens and offers a sample hunt from an earlier real run.
-
-The design follows Apple's Human Interface Guidelines. It uses the system
-font, iOS system colours with automatic dark mode, grouped inset forms,
-segmented controls, a translucent sidebar on desktop and a tab bar on phones,
-and product details in a sheet.
-
-## Use the command line
-
-```bash
-uv run deal_finder hunt "summer linen for a beach wedding" 600 \
-    --region au --sizes "M, 32 waist" --fabric stretch --min-discount 20 \
-    --categories Shirts Trousers
-```
-
-`crewai run` runs a hunt with the defaults in `src/deal_finder/main.py`.
-Every hunt writes `output/deals.md`, and saves its full record to `output/hunts/<id>.json`.
-
-Regions: `au`, `us`, `gb`, `ca`, `nz`.
-
-## Project layout
+## How it fits together
 
 ```
 src/deal_finder/
-├── config/agents.yaml      # the four agents
-├── config/tasks.yaml       # plan → hunt → verify → assess
-├── crew.py                 # wires agents, tools and typed task outputs
-├── models.py               # request, task outputs, deals, report
-├── scoring.py              # discounts, fabric rules, scores, budget picks, Markdown
-├── progress.py             # live progress shared by tools and the web app
-├── service.py              # runs a hunt and stores it
-├── tools/search.py         # Serper shopping and web search
-├── tools/product_page.py   # reads price facts from product pages
-├── web/app.py              # FastAPI server
-└── web/static/             # the front end (plain HTML, CSS, JS)
+├── stores.py      the shops, their tier, and how to tell menswear apart
+├── sync.py        downloads catalogues politely (paged, retried, throttled)
+├── normalize.py   raw product → category, fabric, colour, sizes, price, was price
+├── db.py          SQLite: products, price history, saved items, settings, cache
+├── deals.py       deal score, search and filters, shop mixing
+├── stylist.py     brief → shopping list (presets, keywords, or Claude) → outfit
+├── extra.py       optional paid search for shops that block catalogue reads
+├── main.py        command line
+└── web/           FastAPI app and the front end (plain HTML, CSS and JS)
 ```
+
+Data lives in `data/deals.db`. Delete it to start afresh.
 
 ## Tests
 
@@ -109,5 +120,6 @@ src/deal_finder/
 uv run pytest
 ```
 
-The tests cover scoring, fabric rules, page parsing, the API and the sample
-hunt. None of them call a model or the network.
+62 tests cover categories, fabric rules, menswear filtering, price tracking,
+scoring, sizes, search, outfits, the Claude call (with a fake client), paid
+search limits and the API. None of them use the network.

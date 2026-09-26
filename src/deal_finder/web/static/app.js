@@ -1,8 +1,9 @@
 // Deal Finder front end. No framework: a hash router, a tiny element
-// builder, and views that re-render from JSON the API returns.
+// builder, and views rendered from the JSON API.
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const view = $("#view");
+const CUR = "AUD";
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -35,28 +36,33 @@ function icon(name, cls = "") {
 
 const safeUrl = (u) => (typeof u === "string" && /^https?:\/\//i.test(u) ? u : null);
 
-function money(value, currency) {
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: "currency", currency, minimumFractionDigits: value % 1 ? 2 : 0, maximumFractionDigits: 2,
-    }).format(value);
-  } catch {
-    return `${currency} ${Number(value).toFixed(2)}`;
-  }
+function money(value) {
+  if (value == null) return "";
+  return new Intl.NumberFormat("en-AU", {
+    style: "currency", currency: CUR, minimumFractionDigits: value % 1 ? 2 : 0, maximumFractionDigits: 2,
+  }).format(value);
 }
 
-function when(iso) {
-  const d = new Date(iso);
-  const days = Math.round((Date.now() - d) / 864e5);
-  if (days < 1) return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  if (days < 7) return d.toLocaleDateString(undefined, { weekday: "long" });
-  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+function ago(iso) {
+  if (!iso) return "never";
+  const mins = Math.round((Date.now() - new Date(iso)) / 6e4);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs} hr ago`;
+  return new Date(iso).toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+}
+
+// Shopify's image CDN resizes on request; ask for card-sized images.
+function sized(src, width) {
+  const url = safeUrl(src);
+  if (!url) return null;
+  if (/cdn\.shopify\.com|\/cdn\/shop\//.test(url)) return `${url}${url.includes("?") ? "&" : "?"}width=${width}`;
+  return url;
 }
 
 async function api(path, opts = {}) {
-  const res = await fetch(`/api${path}`, {
-    headers: { "Content-Type": "application/json" }, ...opts,
-  });
+  const res = await fetch(`/api${path}`, { headers: { "Content-Type": "application/json" }, ...opts });
   if (!res.ok) {
     let msg = res.statusText;
     try {
@@ -69,13 +75,9 @@ async function api(path, opts = {}) {
   return res.status === 204 ? null : res.json();
 }
 
-const store = {
-  get(key, fallback) {
-    try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
-  },
-  set(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode */ }
-  },
+const local = {
+  get(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode */ } },
 };
 
 let toastTimer;
@@ -87,88 +89,8 @@ function toast(text) {
   toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
 }
 
-// ── Saved deals (kept in this browser) ─────────────────────
-
-const saved = {
-  all: () => store.get("df.saved", {}),
-  has: (url) => url in saved.all(),
-  toggle(deal, currency) {
-    const all = saved.all();
-    if (all[deal.url]) delete all[deal.url];
-    else all[deal.url] = { ...deal, currency: deal.currency || currency, saved_at: Date.now() };
-    store.set("df.saved", all);
-    updateSavedCount();
-    return Boolean(all[deal.url]);
-  },
-};
-
-function updateSavedCount() {
-  const n = Object.keys(saved.all()).length;
-  $("#saved-count").textContent = n || "";
-}
-
-// ── App state ───────────────────────────────────────────────
-
-let config = { regions: [], categories: [], missing_keys: [] };
-let hunts = [];
-let poll = null;
-
-async function refreshHunts() {
-  hunts = await api("/hunts");
-  const recent = $("#recent");
-  recent.replaceChildren(
-    ...hunts.slice(0, 8).map((h) =>
-      el("a", { class: "side-hunt", href: `#/hunt/${h.id}`, "data-hunt": h.id },
-        h.brief, el("small", { text: h.status === "done" ? `${h.picks} picks · ${when(h.created_at)}` : statusText(h.status) }))),
-  );
-  markActive();
-}
-
-function statusText(s) {
-  return { queued: "Waiting…", running: "Hunting…", failed: "Didn’t finish", done: "Done" }[s] || s;
-}
-
-function markActive() {
-  const [, route, id] = location.hash.split("/");
-  document.querySelectorAll("[data-nav]").forEach((a) =>
-    a.classList.toggle("active", a.dataset.nav === (route || "new")));
-  document.querySelectorAll("[data-hunt]").forEach((a) =>
-    a.classList.toggle("active", route === "hunt" && a.dataset.hunt === id));
-}
-
-// ── Chrome shared by every page ─────────────────────────────
-
-function page(title, { narrow = false, back = null, actions = [] } = {}, ...content) {
-  const nav = el("header", { class: "navbar" },
-    back && el("a", { class: "text-btn back", href: back.href }, icon("chevron", "flip"), back.label),
-    el("div", { class: "nav-title", "aria-hidden": "true", text: title }),
-    ...actions);
-  const flip = nav.querySelector(".flip");
-  if (flip) flip.style.transform = "scaleX(-1)";
-  return el("div", { class: `page${narrow ? " narrow" : ""}` },
-    nav, el("h1", { class: "large-title", text: title }), ...content);
-}
-
-function show(node) {
-  clearInterval(poll);
-  view.replaceChildren(node);
-  window.scrollTo(0, 0);
-  onScroll();
-  markActive();
-}
-
-function onScroll() {
-  document.body.classList.toggle("scrolled", window.scrollY > 36);
-}
-window.addEventListener("scroll", onScroll, { passive: true });
-
-// ── New hunt ────────────────────────────────────────────────
-
-const IDEAS = ["Smart casual for the office", "Summer linen", "Weekend knitwear",
-  "Wedding guest, spring", "Minimal black and navy", "Rugged workwear"];
-
-function segmented(name, options, value, cls = "") {
-  return el("div", { class: `segmented ${cls}`, role: "radiogroup" },
+function segmented(name, options, value, onchange, cls = "") {
+  const node = el("div", { class: `segmented ${cls}`, role: "radiogroup" },
     options.flatMap(([v, label]) => {
       const id = `${name}-${v}`;
       return [
@@ -176,458 +98,446 @@ function segmented(name, options, value, cls = "") {
         el("label", { for: id, text: label }),
       ];
     }));
+  if (onchange) node.addEventListener("change", (e) => onchange(e.target.value));
+  return node;
 }
 
-function newHuntView() {
-  const last = store.get("df.form", {});
-  const form = {
-    brief: last.brief || "", budget: last.budget || 400, region: last.region || "au",
-    sizes: last.sizes || "", categories: last.categories || [], fabric: last.fabric || "natural",
-    min_discount: last.min_discount ?? 0, notes: last.notes || "",
-  };
-  const region = () => config.regions.find((r) => r.code === form.region) || config.regions[0];
+function toggle(checked, onchange, label) {
+  const input = el("input", { type: "checkbox", role: "switch", "aria-label": label, checked });
+  input.addEventListener("change", () => onchange(input.checked));
+  return el("label", { class: "switch" }, input, el("span"));
+}
 
-  const brief = el("textarea", {
-    id: "brief", rows: 3, maxlength: 500, "aria-label": "Describe the look you want",
-    placeholder: "Describe the look… e.g. smart casual for a 30 year old, navy and stone",
-  });
-  brief.value = form.brief;
+// ── App state ───────────────────────────────────────────────
 
-  const ideaChips = el("div", { class: "chips" }, IDEAS.map((idea) =>
-    el("button", { type: "button", class: "chip", text: idea, onclick: () => { brief.value = idea; brief.focus(); } })));
+let status = { stores: [], categories: [], settings: { sizes: {} }, size_groups: {} };
+let poll = null;
 
-  const budgetIn = el("input", { type: "number", id: "budget", min: 20, max: 100000, step: 10, inputmode: "numeric", "aria-label": "Budget" });
-  budgetIn.value = form.budget;
-  const symbol = el("span", { text: region()?.symbol || "$" });
-  const slider = el("input", { type: "range", min: 50, max: 2000, step: 10, "aria-label": "Budget slider" });
-  const syncSlider = () => {
-    slider.value = Math.min(2000, Math.max(50, Number(budgetIn.value) || 50));
-    slider.style.setProperty("--pct", `${((slider.value - 50) / 1950) * 100}%`);
-  };
-  slider.addEventListener("input", () => { budgetIn.value = slider.value; syncSlider(); });
-  budgetIn.addEventListener("input", syncSlider);
-  syncSlider();
+async function refreshStatus() {
+  status = await api("/status");
+  const n = await api("/saved").then((s) => s.length).catch(() => 0);
+  $("#saved-count").textContent = n || "";
+  const cats = $("#side-cats");
+  cats.replaceChildren(...status.categories.map((c) =>
+    el("a", { class: "side-hunt", href: `#/deals?category=${encodeURIComponent(c)}`, "data-cat": c, text: c })));
+  const synced = status.stores.filter((s) => s.synced_at).map((s) => s.synced_at).sort().at(-1);
+  const total = status.stores.reduce((a, s) => a + s.products, 0);
+  $("#side-foot").textContent = status.syncing ? "Updating shops…"
+    : `${total.toLocaleString()} items across ${status.stores.filter((s) => s.products).length} shops · updated ${ago(synced)}`;
+  markActive();
+}
 
-  const regionSel = el("select", { id: "region", "aria-label": "Shopping region" },
-    config.regions.map((r) => el("option", { value: r.code, text: `${r.name} (${r.currency})`, selected: r.code === form.region })));
-  regionSel.addEventListener("change", () => { form.region = regionSel.value; symbol.textContent = region().symbol; });
+function markActive() {
+  const [path, qs] = location.hash.slice(2).split("?");
+  const route = path || "deals";
+  const cat = new URLSearchParams(qs || "").get("category");
+  document.querySelectorAll("[data-nav]").forEach((a) =>
+    a.classList.toggle("active", a.dataset.nav === route && !(route === "deals" && cat)));
+  document.querySelectorAll("[data-cat]").forEach((a) => a.classList.toggle("active", route === "deals" && a.dataset.cat === cat));
+}
 
-  const sizes = el("input", { type: "text", id: "sizes", placeholder: "M, 32 waist, UK 9", maxlength: 200 });
-  sizes.value = form.sizes;
-  const notes = el("input", { type: "text", id: "notes", placeholder: "Optional", maxlength: 500 });
-  notes.value = form.notes;
+// ── Page chrome ─────────────────────────────────────────────
 
-  const cats = new Set(form.categories);
-  const catChips = el("div", { class: "chips" }, config.categories.map((c) => {
-    const chip = el("button", { type: "button", class: "chip", "aria-pressed": String(cats.has(c)), text: c });
-    chip.addEventListener("click", () => {
-      cats.has(c) ? cats.delete(c) : cats.add(c);
-      chip.setAttribute("aria-pressed", String(cats.has(c)));
-    });
-    return chip;
-  }));
+function page(title, { narrow = false, actions = [] } = {}, ...content) {
+  const nav = el("header", { class: "navbar" },
+    el("div", { class: "nav-title", "aria-hidden": "true", text: title }), ...actions);
+  return el("div", { class: `page${narrow ? " narrow" : ""}` },
+    nav, el("h1", { class: "large-title", text: title }), ...content);
+}
 
-  const fabric = segmented("fabric", [["natural", "Natural only"], ["stretch", "Stretch OK"], ["any", "Any"]], form.fabric);
-  const discount = segmented("discount", [[0, "Any"], [20, "20%+"], [30, "30%+"], [50, "50%+"]], form.min_discount);
+function show(node, keepScroll = false) {
+  clearInterval(poll);
+  const y = window.scrollY;
+  view.replaceChildren(node);
+  if (keepScroll) { node.style.animation = "none"; window.scrollTo(0, y); } else window.scrollTo(0, 0);
+  onScroll();
+  markActive();
+}
 
-  const submit = el("button", { type: "submit", class: "btn primary large" }, icon("sparkles"), "Find Deals");
-  const missing = config.missing_keys;
+function onScroll() { document.body.classList.toggle("scrolled", window.scrollY > 36); }
+window.addEventListener("scroll", onScroll, { passive: true });
 
-  const formEl = el("form", { novalidate: true },
-    el("div", { class: "composer" }, el("label", { for: "brief", class: "sr-only", text: "Style brief" }), brief, ideaChips),
+function emptyState(iconName, title, text, ...actions) {
+  return el("div", { class: "empty" }, icon(iconName), el("h2", { text: title }), el("p", { text }), ...actions);
+}
 
-    el("div", { class: "group-label", text: "Budget" }),
-    el("div", { class: "group" },
-      el("div", { class: "row" }, el("label", { for: "budget", text: "Total to spend" }),
-        el("span", { class: "money-field" }, symbol, budgetIn)),
-      el("div", { class: "row" }, slider)),
-
-    el("div", { class: "group-label", text: "About you" }),
-    el("div", { class: "group" },
-      el("div", { class: "row" }, el("label", { for: "region", text: "Shop in" }), regionSel),
-      el("div", { class: "row" }, el("label", { for: "sizes", text: "Sizes" }), sizes),
-      el("div", { class: "row" }, el("label", { for: "notes", text: "Notes" }), notes)),
-    el("p", { class: "group-footer", text: "Sizes and notes guide the search, e.g. “no logos” or “slim fit”." }),
-
-    el("div", { class: "group-label", text: "Rules" }),
-    el("div", { class: "group" },
-      el("div", { class: "row stack" }, el("span", { class: "row-label", text: "Fabric" }), fabric),
-      el("div", { class: "row stack" }, el("span", { class: "row-label", text: "Minimum discount" }), discount)),
-    el("p", { class: "group-footer", text: "Natural only rules out polyester, nylon, viscose and the like. Stretch OK allows up to 5% elastane." }),
-
-    el("div", { class: "group-label", text: "Categories" }),
-    el("div", { class: "group" }, el("div", { class: "row stack" }, catChips)),
-    el("p", { class: "group-footer", text: "Leave all off and the stylist will choose." }),
-
-    el("div", { class: "form-actions" }, submit),
-  );
-
-  formEl.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const body = {
-      brief: brief.value.trim(),
-      budget: Number(budgetIn.value),
-      region: regionSel.value,
-      sizes: sizes.value.trim(),
-      notes: notes.value.trim(),
-      categories: [...cats],
-      fabric: formEl.fabric.value,
-      min_discount: Number(formEl.discount.value),
-    };
-    if (body.brief.length < 3) { brief.focus(); toast("Describe the look you want first"); return; }
-    if (!(body.budget > 0)) { budgetIn.focus(); toast("Set a budget"); return; }
-    store.set("df.form", body);
-    submit.disabled = true;
-    try {
-      const hunt = await api("/hunts", { method: "POST", body: JSON.stringify(body) });
-      await refreshHunts();
-      location.hash = `#/hunt/${hunt.id}`;
-    } catch (err) {
-      toast(err.message);
-      submit.disabled = false;
-    }
-  });
-
-  const notice = missing.length > 0 && el("div", { class: "notice" },
-    el("div", { class: "badge-icon" }, icon("key")),
+function syncingNotice() {
+  return el("div", { class: "notice" },
+    el("div", { class: "badge-icon", style: "background:var(--blue)" }, icon("refresh")),
     el("div", {},
-      el("h3", { text: "Add your API keys to start hunting" }),
-      el("p", {}, "Put ", missing.map((k, i) => [i ? ", " : "", el("code", { text: k.split(" ")[0] })]),
-        " in the ", el("code", { text: ".env" }), " file, then restart the app. Meanwhile, you can explore a sample hunt."),
-      el("button", { type: "button", class: "btn", onclick: openSample }, "Open Sample Hunt")));
-
-  show(page("Find Deals", { narrow: true },
-    el("p", { class: "subtitle", text: "Describe a look. A stylist plans it, a hunter finds it on sale, and every price is checked." }),
-    notice, formEl));
+      el("h3", { text: "Fetching shop catalogues" }),
+      el("p", { style: "margin:0", text: "The first update reads every shop’s full range, which takes a couple of minutes. Deals appear as each shop finishes." })));
 }
 
-async function openSample() {
-  const h = await api("/hunts/sample", { method: "POST" });
-  await refreshHunts();
-  location.hash = `#/hunt/${h.id}`;
-}
+// ── Cards ───────────────────────────────────────────────────
 
-// ── Hunt list ───────────────────────────────────────────────
+function labelClass(label) { return { "Great deal": "great", "Good deal": "good" }[label] || "fair"; }
 
-function huntsView() {
-  if (!hunts.length) {
-    show(page("Hunts", { narrow: true }, el("div", { class: "empty" },
-      icon("clock"), el("h2", { text: "No hunts yet" }),
-      el("p", { text: "Your searches and their results will be kept here." }),
-      el("a", { class: "btn primary", href: "#/new" }, "Start a Hunt"),
-      config.missing_keys.length ? el("div", { style: "margin-top:12px" },
-        el("button", { class: "text-btn", onclick: openSample, text: "Or open the sample hunt" })) : null)));
-    return;
-  }
-  show(page("Hunts", { narrow: true },
-    el("div", { class: "group", style: "margin-top:12px" }, hunts.map((h) =>
-      el("a", { class: "row hunt-row", href: `#/hunt/${h.id}` },
-        el("div", { class: `thumb${h.sample ? " sample" : ""}` }, icon(h.sample ? "sparkles" : "tag")),
-        el("div", { class: "text" },
-          el("div", { class: "t1", text: h.brief }),
-          el("div", { class: "t2" }, h.status === "done"
-            ? `${h.picks} picks · ${money(h.total, h.currency)}${h.savings ? ` · saved ${money(h.savings, h.currency)}` : ""}`
-            : el("span", { class: `status ${h.status}`, text: statusText(h.status) }))),
-        el("span", { class: "value", style: "font-size:15px", text: h.sample ? "Sample" : when(h.created_at) }),
-        icon("chevron", "chev")))),
-  ));
-}
-
-// ── One hunt ────────────────────────────────────────────────
-
-let huntUi = { tab: "picks", sort: "score" };
-
-async function huntView(id) {
-  let hunt;
-  try {
-    hunt = await api(`/hunts/${id}`);
-  } catch {
-    show(page("Not found", { narrow: true }, el("div", { class: "empty" },
-      icon("exclaim"), el("h2", { text: "This hunt is gone" }),
-      el("a", { class: "btn primary", href: "#/hunts" }, "See All Hunts"))));
-    return;
-  }
-  if (hunt.status === "done") return resultsView(hunt);
-
-  renderProgress(hunt);
-  if (hunt.status === "failed") return;
-  poll = setInterval(async () => {
-    if (location.hash !== `#/hunt/${id}`) return clearInterval(poll);
-    try {
-      const next = await api(`/hunts/${id}`);
-      if (next.status === "done" || next.status === "failed") {
-        clearInterval(poll);
-        await refreshHunts();
-        if (next.status === "done") toast("Your deals are ready");
-        return next.status === "done" ? resultsView(next) : renderProgress(next);
-      }
-      renderProgress(next, true);
-    } catch { /* try again next tick */ }
-  }, 1500);
-}
-
-function renderProgress(hunt, keepScroll = false) {
-  const p = hunt.progress || {};
-  const stages = p.stages || ["Planning the outfit", "Searching shops", "Checking prices", "Judging style and value"];
-  const stage = hunt.status === "queued" ? -1 : p.stage ?? 0;
-  const failed = hunt.status === "failed";
-
-  const steps = el("ol", { class: "steps group" }, stages.map((label, i) => {
-    const state = i < stage ? "done" : i === stage && !failed ? "now" : "todo";
-    return el("li", { class: `row step ${state}` },
-      el("span", { class: "dot" }, state === "done" ? icon("check") : null),
-      el("span", { text: label }));
-  }));
-
-  const events = (p.events || []).slice(-8).reverse();
-  const content = [
-    el("p", { class: "subtitle", text: failed ? "This hunt didn’t finish." : hunt.status === "queued" ? "Waiting for the hunt ahead to finish…" : "This takes a few minutes. You can leave this page; the hunt keeps going." }),
-    failed && el("div", { class: "error-card", text: hunt.error || "Something went wrong." }),
-    failed && el("div", { class: "form-actions" }, el("button", {
-      class: "btn primary large", onclick: () => retry(hunt),
-    }, "Try Again")),
-    el("div", { class: "group-label", text: "Progress" }), steps,
-    el("div", { class: "stats" },
-      el("div", { class: "stat" }, el("b", { text: p.searches || 0 }), el("span", { text: "searches" })),
-      el("div", { class: "stat" }, el("b", { text: p.pages || 0 }), el("span", { text: "pages checked" }))),
-    events.length > 0 && el("div", { class: "group-label", text: "Activity" }),
-    events.length > 0 && el("div", { class: "group feed" }, events.map((e) =>
-      el("div", { class: "row" }, icon(e.kind === "search" ? "sparkles" : "link"), el("span", { text: e.text })))),
-  ];
-
-  const node = page(hunt.request.brief, {
-    narrow: true, back: { href: "#/hunts", label: "Hunts" },
-    actions: [el("button", { class: "icon-btn danger", "aria-label": "Delete hunt", onclick: () => removeHunt(hunt) }, icon("trash"))],
-  }, ...content);
-
-  if (keepScroll) {
-    const y = window.scrollY;
-    view.replaceChildren(node);
-    node.style.animation = "none";
-    window.scrollTo(0, y);
-  } else {
-    show(node);
-  }
-}
-
-async function retry(hunt) {
-  try {
-    const h = await api("/hunts", { method: "POST", body: JSON.stringify(hunt.request) });
-    await refreshHunts();
-    location.hash = `#/hunt/${h.id}`;
-  } catch (err) { toast(err.message); }
-}
-
-async function removeHunt(hunt) {
-  if (!confirm(`Delete “${hunt.request.brief}”?`)) return;
-  await api(`/hunts/${hunt.id}`, { method: "DELETE" });
-  await refreshHunts();
-  toast("Hunt deleted");
-  location.hash = "#/hunts";
-}
-
-const SORTS = {
-  score: (a, b) => b.score - a.score || a.price - b.price,
-  discount: (a, b) => b.discount_pct - a.discount_pct || b.score - a.score,
-  price: (a, b) => a.price - b.price,
-  savings: (a, b) => b.savings - a.savings,
-};
-
-function resultsView(hunt) {
-  const r = hunt.report;
-  const cur = r.currency;
-  const regionName = config.regions.find((x) => x.code === hunt.request.region)?.name || "";
-  const picks = r.deals.filter((d) => d.picked);
-  const eligible = r.deals.filter((d) => d.eligible);
-  const passed = r.deals.filter((d) => !d.eligible);
-  const pct = Math.min(100, (r.total / r.budget) * 100);
-
-  const summary = el("div", { class: "summary" },
-    el("div", {},
-      el("div", { class: "k", text: "Your picks" }),
-      el("div", { class: "v" }, money(r.total, cur), el("small", { text: ` of ${money(r.budget, cur)}` })),
-      el("div", { class: "meter", role: "meter", "aria-valuemin": 0, "aria-valuemax": r.budget, "aria-valuenow": r.total, "aria-label": "Budget used" },
-        el("i", { style: "width:0%" })),
-      el("div", { class: "meter-caption", text: `${money(r.remaining, cur)} left · ${picks.length} ${picks.length === 1 ? "item" : "items"}` })),
-    el("div", {},
-      el("div", { class: "k", text: "You save" }),
-      el("div", { class: `v${r.total_savings ? " green" : ""}`, text: money(r.total_savings, cur) })),
-    el("div", {},
-      el("div", { class: "k", text: "Deals found" }),
-      el("div", { class: "v", text: eligible.length }),
-      el("div", { class: "meter-caption", text: `${passed.length} passed over` })));
-  requestAnimationFrame(() => requestAnimationFrame(() => { summary.querySelector(".meter i").style.width = `${pct}%`; }));
-
-  const tabs = segmented("tab", [["picks", `Picks (${picks.length})`], ["all", `All (${eligible.length})`], ["passed", `Passed (${passed.length})`]], huntUi.tab, "wide");
-  const sortSel = el("select", { "aria-label": "Sort by" },
-    [["score", "Best deal"], ["discount", "Biggest discount"], ["savings", "Most saved"], ["price", "Lowest price"]]
-      .map(([v, t]) => el("option", { value: v, text: t, selected: v === huntUi.sort })));
-  const grid = el("div", { class: "grid" });
-
-  const draw = () => {
-    const list = { picks, all: eligible, passed }[huntUi.tab].slice().sort(SORTS[huntUi.sort]);
-    grid.replaceChildren(...list.map((d) => dealCard(d, cur, hunt)));
-    if (!list.length) {
-      grid.replaceChildren(el("div", { class: "empty", style: "grid-column:1/-1;padding:40px" },
-        el("p", { text: huntUi.tab === "passed" ? "Nothing was ruled out." : "Nothing fitted your budget and rules. Try a bigger budget or looser rules." })));
-    }
-  };
-  tabs.addEventListener("change", (e) => { huntUi.tab = e.target.value; draw(); });
-  sortSel.addEventListener("change", () => { huntUi.sort = sortSel.value; draw(); });
-  draw();
-
-  const exportBtn = el("button", { class: "icon-btn", "aria-label": "Export as Markdown", title: "Export as Markdown", onclick: () => exportMarkdown(hunt) }, icon("share"));
-  const delBtn = el("button", { class: "icon-btn danger", "aria-label": "Delete hunt", title: "Delete", onclick: () => removeHunt(hunt) }, icon("trash"));
-
-  const meta = [regionName, when(hunt.created_at),
-    { natural: "Natural fibres", stretch: "Stretch OK", any: "Any fabric" }[hunt.request.fabric]].filter(Boolean).join(" · ");
-
-  show(page(hunt.request.brief, { back: { href: "#/hunts", label: "Hunts" }, actions: [exportBtn, delBtn] },
-    el("p", { class: "subtitle", text: meta }),
-    hunt.sample && el("div", { class: "notice" },
-      el("div", { class: "badge-icon", style: "background:var(--indigo)" }, icon("sparkles")),
-      el("div", {}, el("h3", { text: "Sample hunt" }),
-        el("p", { style: "margin:0", text: "Real products from an earlier run. Prices may have changed since. Run your own hunt for today’s deals." }))),
-    summary,
-    el("div", { class: "toolbar" }, tabs, el("label", { class: "sort" }, "Sort", sortSel)),
-    grid));
-}
-
-async function exportMarkdown(hunt) {
-  const res = await fetch(`/api/hunts/${hunt.id}/markdown`);
-  const blob = new Blob([await res.text()], { type: "text/markdown" });
-  const a = el("a", { href: URL.createObjectURL(blob), download: `deals-${hunt.id}.md` });
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
-
-// ── Deal card & detail sheet ────────────────────────────────
-
-function labelClass(label) {
-  return { "Great deal": "great", "Good deal": "good" }[label] || "fair";
-}
-
-function imageWell(d) {
-  const src = safeUrl(d.image_url);
-  const ph = el("div", { class: "placeholder" }, icon("shirt"), el("span", { text: d.category }));
+function imageWell(d, width = 500) {
+  const src = sized(d.image, width);
+  const ph = el("div", { class: "placeholder" }, icon("shirt"), el("span", { text: d.category || "" }));
   if (!src) return [ph];
-  const img = el("img", { src, alt: "", loading: "lazy", referrerpolicy: "no-referrer" });
+  const img = el("img", { src, alt: "", loading: "lazy", referrerpolicy: "no-referrer", class: "loading" });
+  img.addEventListener("load", () => img.classList.remove("loading"));
   img.addEventListener("error", () => img.replaceWith(ph));
   return [img];
 }
 
-function favButton(d, currency) {
-  const on = saved.has(d.url);
-  const btn = el("button", { class: `fav${on ? " on" : ""}`, "aria-label": on ? "Remove from Saved" : "Save", "aria-pressed": String(on) },
+function badges(d) {
+  const cls = { "Just dropped": "drop", "Lowest price seen": "low", "Store-wide sale": "storewide" };
+  return (d.badges || []).map((b) => el("span", { class: `badge ${cls[b] || ""}`, text: b }));
+}
+
+function offPct(d) { return Math.max(d.discount_pct || 0, d.drop_pct || 0); }
+
+function favButton(d, onchange) {
+  let on = Boolean(d.saved);
+  const btn = el("button", { class: `fav${on ? " on" : ""}`, "aria-pressed": String(on), "aria-label": on ? "Remove from Saved" : "Save" },
     icon(on ? "heart-fill" : "heart"));
-  btn.addEventListener("click", (e) => {
+  btn.addEventListener("click", async (e) => {
     e.stopPropagation();
-    const now = saved.toggle(d, currency);
-    btn.classList.toggle("on", now);
-    btn.setAttribute("aria-pressed", String(now));
-    btn.setAttribute("aria-label", now ? "Remove from Saved" : "Save");
-    btn.replaceChildren(icon(now ? "heart-fill" : "heart"));
-    toast(now ? "Saved" : "Removed from Saved");
-    if (!now && location.hash === "#/saved") savedView();
+    try {
+      await api(`/saved/${encodeURIComponent(d.id)}`, { method: on ? "DELETE" : "PUT" });
+    } catch (err) { toast(err.message); return; }
+    on = !on;
+    d.saved = on;
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-pressed", String(on));
+    btn.setAttribute("aria-label", on ? "Remove from Saved" : "Save");
+    btn.replaceChildren(icon(on ? "heart-fill" : "heart"));
+    toast(on ? "Saved. We’ll track its price." : "Removed from Saved");
+    refreshStatus();
+    onchange?.(on);
   });
   return btn;
 }
 
-function priceRow(d, currency) {
+function priceRow(d) {
+  const was = d.was_price || d.prev_price;
   return el("div", { class: "price-row" },
-    el("span", { class: `price${d.discount_pct ? " sale" : ""}`, text: money(d.price, currency) }),
-    d.discount_pct > 0 && d.original_price && el("span", { class: "was", text: money(d.original_price, currency) }));
+    el("span", { class: `price${offPct(d) ? " sale" : ""}`, text: money(d.price) }),
+    was && el("span", { class: "was", text: money(was) }));
 }
 
-function dealCard(d, currency, hunt) {
+function dealCard(d, { onopen, selected = false, extra = null } = {}) {
+  const pct = offPct(d);
   const card = el("article", {
-    class: `card${d.eligible === false ? " muted" : ""}`, tabindex: 0, role: "button",
-    "aria-label": `${d.name}, ${d.retailer}, ${money(d.price, currency)}`,
+    class: `card${selected ? " selected" : ""}`, tabindex: 0, role: "button",
+    "aria-label": `${d.brand}, ${d.title}, ${money(d.price)}`,
   },
   el("div", { class: "well" }, imageWell(d),
-    d.discount_pct > 0 && el("span", { class: "pill sale", text: `−${d.discount_pct}%` }),
-    d.picked && huntUi.tab !== "picks" && el("span", { class: "pill picked" }, icon("check"), "Pick"),
-    favButton(d, currency)),
+    pct > 0 && el("span", { class: "pill sale", text: `−${pct}%` }),
+    favButton(d)),
   el("div", { class: "card-body" },
-    el("div", { class: "retailer", text: d.retailer }),
-    el("div", { class: "card-name", text: d.name }),
-    priceRow(d, currency),
+    el("div", { class: "brand-line" }, el("b", { text: d.brand }), d.brand !== d.store_name && el("span", { text: d.store_name })),
+    el("div", { class: "card-name", text: d.title }),
+    d.colour && !d.title.toLowerCase().includes(d.colour.toLowerCase().split(/[ /]/)[0]) && el("div", { class: "retailer", text: d.colour }),
+    priceRow(d),
     el("div", { class: "card-meta" },
-      d.eligible !== false && el("span", { class: `pill ${labelClass(d.label)}`, text: d.label }),
-      d.verified && el("span", { class: "verified", title: "Price checked on the product page" }, icon("check-seal"))),
-    d.rejection ? el("div", { class: "reason", text: d.rejection }) : d.justification && el("div", { class: "why", text: d.justification })));
-  const open = () => openDeal(d, currency, hunt);
+      el("span", { class: `pill ${labelClass(d.label)}`, text: d.label }),
+      d.fabric === "natural" && el("span", { class: "retailer", text: "Natural" })),
+    d.badges?.length > 0 && el("div", { class: "badges" }, badges(d)),
+    extra));
+  const open = () => (onopen ? onopen(d) : openProduct(d.id));
   card.addEventListener("click", open);
   card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
   return card;
 }
 
-let lastFocus = null;
+function skeletonGrid(n = 8) {
+  return el("div", { class: "grid" }, Array.from({ length: n }, () => el("div", { class: "skeleton" })));
+}
 
-function openDeal(d, currency) {
-  const sheet = $("#sheet");
-  const backdrop = $("#sheet-backdrop");
-  lastFocus = document.activeElement;
-  const ringColour = d.score >= 75 ? "var(--green)" : d.score >= 55 ? "var(--blue)" : "var(--label-3)";
-  const fabricText = { natural: "Natural fibres", stretch: "Natural with stretch", synthetic: "Contains synthetics", unknown: "Not listed" }[d.fabric_verdict];
+// ── Deals ───────────────────────────────────────────────────
+
+const DEFAULT_FILTERS = {
+  q: "", category: [], store: [], min_discount: 0, max_price: "", fabric: "any",
+  my_sizes: false, premium_only: false, include_storewide: true, sort: "score",
+};
+let filters = { ...DEFAULT_FILTERS, ...local.get("df.filters", {}) };
+
+function filterCount() {
+  let n = 0;
+  if (filters.store.length) n++;
+  if (Number(filters.min_discount)) n++;
+  if (filters.max_price) n++;
+  if (filters.fabric !== "any") n++;
+  if (filters.my_sizes) n++;
+  if (filters.premium_only) n++;
+  if (!filters.include_storewide) n++;
+  return n;
+}
+
+function queryString(f, offset = 0) {
+  const p = new URLSearchParams();
+  if (f.q) p.set("q", f.q);
+  f.category.forEach((c) => p.append("category", c));
+  f.store.forEach((s) => p.append("store", s));
+  for (const k of ["min_discount", "max_price", "fabric", "sort"]) if (f[k] !== "" && f[k] != null) p.set(k, f[k]);
+  for (const k of ["my_sizes", "premium_only", "include_storewide"]) p.set(k, f[k]);
+  p.set("limit", 48);
+  p.set("offset", offset);
+  return p.toString();
+}
+
+async function dealsView(params) {
+  const cat = params.get("category");
+  filters.category = cat ? [cat] : [];
+  local.set("df.filters", { ...filters, category: [] });
+
+  const title = cat || "Deals";
+  const grid = el("div", { class: "grid" });
+  const meta = el("div", { class: "result-meta" });
+  const more = el("div", { class: "load-more" });
+  const extraBox = el("div");
+
+  const search = el("input", { type: "search", placeholder: "Search brands, styles, colours", "aria-label": "Search deals", value: filters.q, enterkeyhint: "search" });
+  let debounce;
+  search.addEventListener("input", () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => { filters.q = search.value.trim(); local.set("df.filters", { ...filters, category: [] }); load(); }, 250);
+  });
+
+  const filterBtn = el("button", { class: "icon-btn filter-btn", "aria-label": "Filters", onclick: () => openFilters(load) }, icon("sliders"));
+  const markFilters = () => { const n = filterCount(); if (n) filterBtn.dataset.count = n; else delete filterBtn.dataset.count; };
+  markFilters();
+
+  const chips = el("div", { class: "scroller" },
+    el("a", { class: "chip", href: "#/deals", "aria-pressed": String(!cat), text: "All" }),
+    status.categories.map((c) => el("a", { class: "chip", href: `#/deals?category=${encodeURIComponent(c)}`, "aria-pressed": String(c === cat), text: c })));
+
+  const sortSel = el("select", { "aria-label": "Sort by" },
+    [["score", "Best deal"], ["discount", "Biggest discount"], ["price", "Price: low to high"], ["price_desc", "Price: high to low"], ["newest", "Newest"]]
+      .map(([v, t]) => el("option", { value: v, text: t, selected: v === filters.sort })));
+  sortSel.addEventListener("change", () => { filters.sort = sortSel.value; local.set("df.filters", { ...filters, category: [] }); load(); });
+
+  let offset = 0;
+  async function load(append = false) {
+    markFilters();
+    if (!append) { offset = 0; grid.replaceChildren(...skeletonGrid().children); more.replaceChildren(); }
+    let r;
+    try {
+      r = await api(`/deals?${queryString(filters, offset)}`);
+    } catch (err) { grid.replaceChildren(el("div", { class: "error-card", text: err.message })); return; }
+    const cards = r.items.map((d) => dealCard(d));
+    if (append) grid.append(...cards); else grid.replaceChildren(...cards);
+    offset += r.items.length;
+    meta.replaceChildren(el("span", { text: `${r.total.toLocaleString()} ${r.total === 1 ? "deal" : "deals"}` }), el("label", { class: "sort" }, "Sort", sortSel));
+    more.replaceChildren(offset < r.total ? el("button", { class: "btn", onclick: () => load(true) }, "Show More") : "");
+    if (!r.total) {
+      grid.replaceChildren(el("div", { style: "grid-column:1/-1" }, status.empty
+        ? syncingNotice()
+        : emptyState("search", "No deals match", "Try fewer filters, or search other words.",
+          filterCount() ? el("button", { class: "btn", onclick: () => { Object.assign(filters, { ...DEFAULT_FILTERS, q: filters.q, sort: filters.sort }); load(); } }, "Clear Filters") : null)));
+    }
+    renderExtraPrompt();
+  }
+
+  function renderExtraPrompt() {
+    const q = [filters.q, cat].filter(Boolean).join(" ");
+    extraBox.replaceChildren();
+    if (!q || !status.extra) return;
+    extraBox.append(el("div", { class: "group", style: "margin-top:24px" },
+      el("button", { class: "row", style: "width:100%;border:0;background:none;cursor:pointer;text-align:left", onclick: () => runExtra(q, extraBox) },
+        el("div", { class: "badge-icon", style: "width:30px;height:30px;border-radius:7px;background:var(--indigo);color:#fff;display:grid;place-items:center" }, icon("search")),
+        el("div", { class: "grow" }, el("span", { text: `Search THE ICONIC, David Jones and Country Road for “${q}”` }),
+          el("span", { class: "sub", text: `Paid search · ${status.extra_used_today} of ${status.extra_cap} used today · cached for a day` })),
+        icon("chevron", "chev"))));
+  }
+
+  show(page(title, {},
+    status.syncing && status.empty ? syncingNotice() : null,
+    el("div", { class: "search-row" }, el("label", { class: "searchbar" }, icon("search"), search), filterBtn),
+    chips, meta, grid, more, extraBox));
+  load();
+  if (status.syncing) {
+    poll = setInterval(async () => {
+      await refreshStatus();
+      if (!status.syncing) { clearInterval(poll); load(); }
+    }, 5000);
+  }
+}
+
+async function runExtra(q, box) {
+  box.replaceChildren(el("div", { class: "result-meta" }, el("span", { class: "spinner" }), el("span", { text: "Searching other shops…" })));
+  try {
+    const r = await api(`/extra?q=${encodeURIComponent(q)}`);
+    status.extra_used_today = r.used_today;
+    box.replaceChildren(
+      el("div", { class: "section-title" }, "Other shops", el("span", { class: "retailer", text: r.cached ? "From earlier today" : "Current prices" })),
+      r.items.length ? el("div", { class: "group extra-list" }, r.items.map((x) =>
+        el("a", { class: "row", href: safeUrl(x.url) || "#", target: "_blank", rel: "noopener noreferrer" },
+          sized(x.image, 120) ? el("img", { src: sized(x.image, 120), alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : null,
+          el("div", { class: "grow" }, el("div", { class: "t1", text: x.title }), el("div", { class: "t2", text: x.store_name })),
+          el("span", { class: "price", text: money(x.price) }), icon("arrow-up-right", "chev"))))
+        : el("p", { class: "subtitle", text: "No men’s results from those shops." }),
+      el("p", { class: "group-footer", text: "These shops block catalogue reads, so only the current price is known; discounts are not checked." }));
+  } catch (err) {
+    box.replaceChildren(el("div", { class: "error-card", text: err.message }));
+  }
+}
+
+function openFilters(onapply) {
+  const draft = structuredClone(filters);
+  const feeds = status.stores.filter((s) => s.kind === "shopify");
+  const storeChips = el("div", { class: "chips" }, feeds.map((s) => {
+    const chip = el("button", { type: "button", class: "chip", "aria-pressed": String(draft.store.includes(s.key)), text: s.name });
+    chip.addEventListener("click", () => {
+      draft.store = draft.store.includes(s.key) ? draft.store.filter((k) => k !== s.key) : [...draft.store, s.key];
+      chip.setAttribute("aria-pressed", String(draft.store.includes(s.key)));
+    });
+    return chip;
+  }));
+  const maxPrice = el("input", { type: "number", inputmode: "numeric", min: 0, step: 10, placeholder: "Any", value: draft.max_price, "aria-label": "Maximum price" });
+  maxPrice.addEventListener("input", () => { draft.max_price = maxPrice.value; });
+  const sizesSet = Object.values(status.settings.sizes).some(Boolean);
+
+  openSheet("Filters", [
+    el("div", { class: "group-label", text: "Discount" }),
+    el("div", { class: "group" },
+      el("div", { class: "row stack" }, segmented("f-disc", [[0, "Any"], [20, "20%+"], [30, "30%+"], [50, "50%+"]], draft.min_discount, (v) => { draft.min_discount = Number(v); }, "wide")),
+      el("div", { class: "row" }, el("div", { class: "grow" }, "Include store-wide sales", el("span", { class: "sub", text: "Shops that mark most of their range down" })),
+        toggle(draft.include_storewide, (v) => { draft.include_storewide = v; }, "Include store-wide sales"))),
+    el("div", { class: "group-label", text: "Price and fit" }),
+    el("div", { class: "group" },
+      el("div", { class: "row" }, el("span", { text: "Up to" }), el("span", { class: "money-field" }, "$", maxPrice)),
+      el("div", { class: "row" }, el("div", { class: "grow" }, "In my sizes", el("span", { class: "sub", text: sizesSet ? "Uses the sizes saved in Stores" : "Set your sizes in Stores first" })),
+        toggle(draft.my_sizes, (v) => { draft.my_sizes = v; }, "In my sizes"))),
+    el("div", { class: "group-label", text: "Fabric" }),
+    el("div", { class: "group" }, el("div", { class: "row stack" },
+      segmented("f-fab", [["any", "Any"], ["stretch", "Natural + stretch"], ["natural", "Natural only"]], draft.fabric, (v) => { draft.fabric = v; }, "wide"))),
+    el("div", { class: "group-label", text: "Shops" }),
+    el("div", { class: "group" },
+      el("div", { class: "row" }, el("div", { class: "grow" }, "Premium shops only", el("span", { class: "sub", text: "M.J. Bale, P. Johnson, Harrolds, Aquila, Venroy, Bassike, Calibre" })),
+        toggle(draft.premium_only, (v) => { draft.premium_only = v; }, "Premium shops only")),
+      el("div", { class: "row stack" }, storeChips)),
+    el("p", { class: "group-footer", text: "Pick shops to limit results to them. None picked means all." }),
+    el("div", { class: "form-actions", style: "display:grid;grid-template-columns:auto 1fr;gap:10px" },
+      el("button", { class: "btn", onclick: () => { Object.assign(filters, { ...DEFAULT_FILTERS, q: filters.q, sort: filters.sort, category: filters.category }); local.set("df.filters", { ...filters, category: [] }); closeSheet(); onapply(); } }, "Reset"),
+      el("button", { class: "btn primary", onclick: () => { Object.assign(filters, draft); local.set("df.filters", { ...filters, category: [] }); closeSheet(); onapply(); } }, "Show Deals")),
+  ]);
+}
+
+// ── Product sheet ───────────────────────────────────────────
+
+function sparkline(history, current) {
+  const pts = [...history.map((h) => ({ t: new Date(h.at).getTime(), p: h.price, w: h.was_price })), { t: Date.now(), p: current }];
+  if (pts.length < 2) return null;
+  const W = 300, H = 90, pad = 6;
+  const t0 = pts[0].t, t1 = pts.at(-1).t || t0 + 1;
+  const prices = pts.flatMap((x) => [x.p, x.w].filter(Boolean));
+  const lo = Math.min(...prices) * 0.95, hi = Math.max(...prices) * 1.02;
+  const x = (t) => pad + ((t - t0) / Math.max(1, t1 - t0)) * (W - 2 * pad);
+  const y = (p) => H - pad - ((p - lo) / Math.max(1, hi - lo)) * (H - 2 * pad);
+  // Prices hold until they change, so draw steps.
+  let d = `M${x(pts[0].t)},${y(pts[0].p)}`;
+  for (let i = 1; i < pts.length; i++) d += ` H${x(pts[i].t)} V${y(pts[i].p)}`;
+  const area = `${d} V${H} H${x(pts[0].t)} Z`;
+  const was = pts.findLast((q) => q.w)?.w;
+  const svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Price history">
+    <path class="area" d="${area}"/>${was ? `<line class="was" x1="0" x2="${W}" y1="${y(was)}" y2="${y(was)}"/>` : ""}
+    <path class="line" d="${d}"/></svg>`;
+  const box = el("div", { class: "spark" });
+  box.innerHTML = svg;
+  box.append(el("div", { class: "spark-legend" },
+    el("span", { text: `Since ${new Date(t0).toLocaleDateString("en-AU", { day: "numeric", month: "short" })}` }),
+    el("span", { text: `Low ${money(Math.min(...pts.map((q) => q.p)))} · High ${money(Math.max(...pts.map((q) => q.p)))}` }),
+    was ? el("span", { text: `– – was ${money(was)}` }) : null));
+  return box;
+}
+
+function mySizesFor(category) {
+  const group = Object.entries(status.size_groups).find(([, cats]) => cats.includes(category))?.[0];
+  return (status.settings.sizes[group] || "").split(/[,/]/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+}
+
+async function openProduct(id) {
+  let d;
+  try { d = await api(`/products/${encodeURIComponent(id)}`); } catch (err) { toast(err.message); return; }
   const url = safeUrl(d.url);
-
+  const pct = offPct(d);
+  const ringColour = d.score >= 75 ? "var(--green)" : d.score >= 55 ? "var(--blue)" : "var(--label-3)";
   const ring = el("div", { class: "ring", style: `--p:0;--c:${ringColour}` });
   ring.innerHTML = '<svg viewBox="0 0 40 40"><circle class="track" cx="20" cy="20" r="15.9" pathLength="100"/><circle class="bar" cx="20" cy="20" r="15.9" pathLength="100"/></svg>';
   ring.append(el("b", { text: d.score }));
   requestAnimationFrame(() => requestAnimationFrame(() => ring.style.setProperty("--p", d.score)));
 
-  const copyBtn = el("button", { class: "btn", "aria-label": "Copy link", title: "Copy link" }, icon("link"));
-  copyBtn.addEventListener("click", async () => {
+  const fav = favButton(d);
+  fav.className = `btn${d.saved ? " on" : ""}`;
+  fav.style.position = "static";
+  const copy = el("button", { class: "btn", "aria-label": "Copy link", title: "Copy link" }, icon("link"));
+  copy.addEventListener("click", async () => {
     try { await navigator.clipboard.writeText(d.url); toast("Link copied"); } catch { toast("Couldn’t copy"); }
   });
-  const fav = favButton(d, currency);
-  fav.className = "btn";
-  fav.style.position = "static";
 
+  const mine = mySizesFor(d.category);
+  const fabricText = { natural: "Natural fibres", stretch: "Natural with stretch", synthetic: "Contains synthetics", unknown: "Not listed" }[d.fabric];
   const facts = [
-    ["Garment", d.garment],
-    ["Category", d.category],
+    ["Shop", d.store_name],
+    ["Colour", d.colour],
     ["Fabric", [d.composition, fabricText].filter(Boolean).join(" · ")],
-    ["In stock", d.in_stock == null ? "Unknown" : d.in_stock ? "Yes" : "No"],
-    ["Price checked", d.verified ? "Yes, on the product page" : "From search results only"],
-    ["Style fit", `${d.style_fit} / 10`],
-    d.savings > 0 && ["You save", money(d.savings, currency)],
+    d.saved_price != null && ["Price when saved", money(d.saved_price)],
+    ["Tracking since", d.first_seen ? new Date(d.first_seen).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" }) : "—"],
+  ].filter((f) => f && f[1]);
+
+  const why = [
+    d.discount_pct && `${d.discount_pct}% off the shop’s “was” price${d.badges.includes("Store-wide sale") ? " (counted at half: this shop marks most of its range down)" : ""}`,
+    d.drop_pct && `dropped ${d.drop_pct}% since we last checked`,
+    d.badges.includes("Lowest price seen") && "the lowest price we’ve recorded",
+    d.fabric === "natural" && "natural fibres",
+    d.tier === "premium" && "a premium shop",
   ].filter(Boolean);
 
-  sheet.replaceChildren(
-    el("div", { class: "grabber" }),
-    el("div", { class: "sheet-head" }, el("button", { class: "close-btn", "aria-label": "Close", onclick: closeSheet }, icon("xmark"))),
+  openSheet(null, [
     el("div", { class: "detail-hero" },
-      el("div", { class: "well" }, imageWell(d), d.discount_pct > 0 && el("span", { class: "pill sale", text: `−${d.discount_pct}%` })),
+      el("div", { class: "well" }, imageWell(d, 900), pct > 0 && el("span", { class: "pill sale", text: `−${pct}%` })),
       el("div", {},
-        el("div", { class: "retailer", text: d.retailer }),
-        el("h2", { id: "sheet-title", text: d.name }),
+        el("div", { class: "brand-line" }, el("b", { text: d.brand }), d.brand !== d.store_name && el("span", { text: `at ${d.store_name}` })),
+        el("h2", { id: "sheet-title", text: d.title }),
         el("div", { class: "detail-price" },
-          el("span", { class: `price${d.discount_pct ? " sale" : ""}`, text: money(d.price, currency) }),
-          d.discount_pct > 0 && d.original_price && el("span", { class: "was", text: money(d.original_price, currency) }),
+          el("span", { class: `price${pct ? " sale" : ""}`, text: money(d.price) }),
+          (d.was_price || d.prev_price) && el("span", { class: "was", text: money(d.was_price || d.prev_price) }),
           el("span", { class: `pill ${labelClass(d.label)}`, text: d.label })),
+        d.badges.length > 0 && el("div", { class: "badges", style: "margin:-6px 0 12px" }, badges(d)),
         el("div", { class: "score-line" }, ring,
           el("div", {}, el("div", { class: "k", text: "Deal score" }),
-            el("div", { class: "v", text: d.rejection || (d.picked ? "In your picks" : "Worth a look") }))),
+            el("div", { class: "v", text: d.saved_price != null && d.price !== d.saved_price
+              ? `${d.price < d.saved_price ? "Down" : "Up"} ${money(Math.abs(d.price - d.saved_price))} since you saved it` : `You save ${money(d.saving)}` }))),
         el("div", { class: "detail-actions" },
-          url ? el("a", { class: "btn primary", href: url, target: "_blank", rel: "noopener noreferrer" },
-            `Buy at ${d.retailer}`, icon("arrow-up-right")) : el("span"),
-          fav, copyBtn))),
-    d.justification && el("div", { class: "quote" }, el("b", { text: "Why" }), d.justification),
+          url ? el("a", { class: "btn primary", href: url, target: "_blank", rel: "noopener noreferrer" }, `Buy at ${d.store_name}`, icon("arrow-up-right")) : el("span"),
+          fav, copy))),
+    why.length > 0 && el("div", { class: "quote" }, el("b", { text: "Why this score" }), `${why.join(", ")}.`.replace(/^./, (c) => c.toUpperCase())),
+    d.history.length > 0 && el("div", { class: "group-label", text: "Price history" }),
+    d.history.length > 0 && el("div", { class: "group" }, sparkline(d.history, d.price)
+      || el("div", { class: "row", text: "We’ll chart this price as it changes." })),
+    d.sizes.length > 0 && el("div", { class: "group-label", text: "Sizes in stock" }),
+    d.sizes.length > 0 && el("div", { class: "group" }, el("div", { class: "size-chips" },
+      d.sizes.map((s) => el("span", { class: mine.includes(s.toLowerCase()) ? "mine" : "", text: s })))),
     el("div", { class: "group-label", text: "Details" }),
-    el("div", { class: "group" }, facts.map(([k, v]) =>
-      el("div", { class: "row" }, el("span", { text: k }), el("span", { class: "value", text: v })))),
-  );
+    el("div", { class: "group" }, facts.map(([k, v]) => el("div", { class: "row" }, el("span", { text: k }), el("span", { class: "value", text: v })))),
+  ]);
+}
+
+// ── Sheet ───────────────────────────────────────────────────
+
+let lastFocus = null;
+
+function openSheet(title, content) {
+  const sheet = $("#sheet");
+  const backdrop = $("#sheet-backdrop");
+  lastFocus = document.activeElement;
+  const close = el("button", { class: "close-btn", "aria-label": "Close", onclick: closeSheet }, icon("xmark"));
+  sheet.replaceChildren(
+    el("div", { class: "grabber" }),
+    title ? el("div", { class: "sheet-bar" }, el("h2", { id: "sheet-title", text: title }), close) : el("div", { class: "sheet-head" }, close),
+    ...content.filter(Boolean));
   sheet.hidden = false;
   backdrop.hidden = false;
   sheet.classList.remove("closing");
   backdrop.classList.remove("closing");
   document.body.style.overflow = "hidden";
   sheet.scrollTop = 0;
-  sheet.querySelector(".close-btn").focus();
+  close.focus();
 }
 
 function closeSheet() {
@@ -642,43 +552,216 @@ function closeSheet() {
 $("#sheet-backdrop").addEventListener("click", closeSheet);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
 
+// ── Outfit ──────────────────────────────────────────────────
+
+const IDEAS = ["Smart casual dinner", "Office, navy and grey", "Summer wedding", "Weekend, relaxed", "Winter layers", "Navy blazer, white shirt, brown loafers"];
+
+function outfitView() {
+  const last = local.get("df.outfit", {});
+  const form = { brief: "", budget: 600, use_ai: false, my_sizes: true, premium_only: false, fabric: "any", include_storewide: true, ...last };
+
+  const brief = el("textarea", { rows: 3, maxlength: 400, "aria-label": "Describe what you need", placeholder: "What’s it for? e.g. smart casual dinner, navy and stone. Or list pieces: navy blazer, white shirt, brown loafers" });
+  brief.value = form.brief;
+  const ideas = el("div", { class: "chips" }, IDEAS.map((i) => el("button", { type: "button", class: "chip", text: i, onclick: () => { brief.value = i; brief.focus(); } })));
+
+  const budget = el("input", { type: "number", min: 50, max: 20000, step: 10, inputmode: "numeric", "aria-label": "Budget", value: form.budget });
+  const slider = el("input", { type: "range", min: 100, max: 3000, step: 10, "aria-label": "Budget slider" });
+  const sync = () => { slider.value = Math.min(3000, Math.max(100, Number(budget.value) || 100)); slider.style.setProperty("--pct", `${((slider.value - 100) / 2900) * 100}%`); };
+  slider.addEventListener("input", () => { budget.value = slider.value; sync(); });
+  budget.addEventListener("input", sync);
+  sync();
+
+  const results = el("div");
+  const go = el("button", { type: "submit", class: "btn primary large" }, icon("sparkles"), "Build Outfit");
+
+  const formEl = el("form", {},
+    el("div", { class: "composer" }, brief, ideas),
+    el("div", { class: "group-label", text: "Budget" }),
+    el("div", { class: "group" },
+      el("div", { class: "row" }, el("span", { text: "Total to spend" }), el("span", { class: "money-field" }, "$", budget)),
+      el("div", { class: "row" }, slider)),
+    el("div", { class: "group-label", text: "Options" }),
+    el("div", { class: "group" },
+      el("div", { class: "row" }, el("div", { class: "grow" }, "In my sizes", el("span", { class: "sub", text: "Set sizes in Stores" })), toggle(form.my_sizes, (v) => { form.my_sizes = v; }, "In my sizes")),
+      el("div", { class: "row" }, el("span", { class: "grow", text: "Premium shops only" }), toggle(form.premium_only, (v) => { form.premium_only = v; }, "Premium shops only")),
+      el("div", { class: "row" }, el("div", { class: "grow" }, "Read my brief with AI",
+        el("span", { class: "sub", text: status.ai ? "One small Claude call, under a cent; repeats are free" : "Add ANTHROPIC_API_KEY to .env to turn on" })),
+      toggle(form.use_ai && status.ai, (v) => { form.use_ai = v; }, "Read my brief with AI")),
+      el("div", { class: "row stack" }, el("span", { class: "row-label", text: "Fabric" }),
+        segmented("o-fab", [["any", "Any"], ["stretch", "Natural + stretch"], ["natural", "Natural only"]], form.fabric, (v) => { form.fabric = v; }))),
+    el("p", { class: "group-footer", text: "Without AI, looks like “office” or “summer” use a preset, and lists like “navy blazer, white shirt” are read word by word. Both are free." }),
+    el("div", { class: "form-actions" }, go));
+  if (!status.ai) formEl.querySelector('[aria-label="Read my brief with AI"]').disabled = true;
+
+  formEl.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const body = { ...form, brief: brief.value.trim(), budget: Number(budget.value), use_ai: form.use_ai && status.ai };
+    if (body.brief.length < 2) { brief.focus(); toast("Describe what you need first"); return; }
+    local.set("df.outfit", body);
+    go.disabled = true;
+    results.replaceChildren(el("div", { class: "result-meta" }, el("span", { class: "spinner" }), el("span", { text: body.use_ai ? "Reading your brief…" : "Picking pieces…" })));
+    results.scrollIntoView({ behavior: "smooth", block: "start" });
+    try {
+      renderOutfit(await api("/outfit", { method: "POST", body: JSON.stringify(body) }), results);
+    } catch (err) {
+      results.replaceChildren(el("div", { class: "error-card", text: err.message }));
+    }
+    go.disabled = false;
+  });
+
+  show(page("Outfit", { narrow: true },
+    el("p", { class: "subtitle", text: "Describe a look and a budget. You get the best-value piece for each part of it, with alternatives." }),
+    status.empty ? syncingNotice() : null, formEl, results));
+}
+
+function renderOutfit(r, box) {
+  const picks = r.slots.map((s) => s.pick);
+  const summary = el("div", { class: "summary" });
+  const drawSummary = () => {
+    const chosen = picks.filter(Boolean);
+    const total = chosen.reduce((a, d) => a + d.price, 0);
+    const saved = chosen.reduce((a, d) => a + d.saving, 0);
+    summary.replaceChildren(
+      el("div", {},
+        el("div", { class: "k", text: r.plan.look }),
+        el("div", { class: "v" }, money(total), el("small", { text: ` of ${money(r.budget)}` })),
+        el("div", { class: "meter" }, el("i", { style: `width:${Math.min(100, (total / r.budget) * 100)}%;${total > r.budget ? "background:var(--red)" : ""}` })),
+        el("div", { class: "meter-caption", text: total > r.budget ? `${money(total - r.budget)} over budget` : `${money(r.budget - total)} left · ${chosen.length} pieces` })),
+      el("div", {}, el("div", { class: "k", text: "You save" }), el("div", { class: `v${saved ? " green" : ""}`, text: money(saved) })),
+      el("div", {}, el("div", { class: "k", text: "Read by" }), el("div", { class: "v", style: "font-size:22px", text: { ai: "AI", preset: "Preset", keywords: "Your list" }[r.plan.source] })));
+  };
+  drawSummary();
+
+  const slots = r.slots.map((s, i) => {
+    const body = el("div", { class: "slot-body" });
+    const draw = () => {
+      const pick = picks[i];
+      const options = [s.pick, ...s.alternates].filter(Boolean).filter((d, j, a) => a.findIndex((x) => x.id === d.id) === j);
+      body.replaceChildren(
+        pick ? dealCard(pick) : el("div", { class: "error-card", text: "Nothing fits the budget and sizes. Alternatives are on the right." }),
+        options.length > 1 ? el("div", {},
+          el("div", { class: "alts-label", text: "Tap to swap" }),
+          el("div", { class: "alts" }, options.map((d) => dealCard(d, {
+            selected: pick && d.id === pick.id,
+            onopen: () => { picks[i] = d; draw(); drawSummary(); },
+          })))) : null);
+    };
+    draw();
+    const words = [...s.slot.colours, ...s.slot.keywords].slice(0, 4).join(", ");
+    return el("section", { class: "slot" },
+      el("div", { class: "slot-head" }, el("h3", { text: s.slot.category }), el("span", { text: words })), body);
+  });
+
+  const extraBox = el("div");
+  box.replaceChildren(
+    el("div", { class: "section-title", text: "Your outfit" }),
+    summary, ...slots,
+    status.extra && el("div", { class: "group", style: "margin-top:28px" },
+      el("button", { class: "row", style: "width:100%;border:0;background:none;cursor:pointer;text-align:left", onclick: () => runExtra(`${r.plan.look} ${r.slots.map((s) => s.slot.category).slice(0, 2).join(" ")}`, extraBox) },
+        el("span", { class: "grow", text: "Also check THE ICONIC, David Jones and Country Road" }), icon("chevron", "chev"))),
+    extraBox);
+}
+
 // ── Saved ───────────────────────────────────────────────────
 
-function savedView() {
-  const items = Object.values(saved.all()).sort((a, b) => b.saved_at - a.saved_at);
+async function savedView() {
+  const items = await api("/saved");
   if (!items.length) {
-    show(page("Saved", {}, el("div", { class: "empty" },
-      icon("heart"), el("h2", { text: "Nothing saved yet" }),
-      el("p", { text: "Tap the heart on any deal to keep it here." }))));
+    show(page("Saved", {}, emptyState("heart", "Nothing saved yet", "Tap the heart on any piece. We’ll track its price and show you when it drops.",
+      el("a", { class: "btn primary", href: "#/deals" }, "Browse Deals"))));
     return;
   }
-  const total = items.reduce((s, d) => s + (d.currency === items[0].currency ? d.price : 0), 0);
+  const down = items.filter((d) => d.change < 0);
+  const cards = items.map((d) => dealCard(d, {
+    extra: d.change ? el("div", { class: `change ${d.change < 0 ? "down" : "up"}`, style: "margin-top:6px;font-size:13px",
+      text: `${d.change < 0 ? "↓" : "↑"} ${money(Math.abs(d.change))} since saved` })
+      : !d.active ? el("div", { class: "reason", text: "No longer listed" }) : null,
+  }));
   show(page("Saved", {},
-    el("p", { class: "subtitle", text: `${items.length} ${items.length === 1 ? "item" : "items"} · ${money(total, items[0].currency)}` }),
-    el("div", { class: "grid" }, items.map((d) => dealCard(d, d.currency)))));
+    el("p", { class: "subtitle", text: down.length ? `${down.length} of ${items.length} have dropped in price since you saved them.` : `${items.length} saved. We check prices every 12 hours.` }),
+    el("div", { class: "grid" }, cards)));
+}
+
+// ── Stores ──────────────────────────────────────────────────
+
+function storesView() {
+  const labels = { tops: "Tops", bottoms: "Waist", tailoring: "Jackets & suits", shoes: "Shoes" };
+  const hints = { tops: "M, L", bottoms: "32, 82", tailoring: "40, 100, M", shoes: "9, 42, UK 9" };
+  const inputs = Object.keys(labels).map((g) => {
+    const input = el("input", { type: "text", id: `size-${g}`, placeholder: hints[g], value: status.settings.sizes[g] || "", maxlength: 60 });
+    return [g, input];
+  });
+  const saveSizes = async () => {
+    const sizes = Object.fromEntries(inputs.map(([g, i]) => [g, i.value.trim()]));
+    status.settings = await api("/settings", { method: "PUT", body: JSON.stringify({ sizes }) });
+    toast("Sizes saved");
+  };
+  inputs.forEach(([, i]) => i.addEventListener("change", saveSizes));
+
+  const feeds = status.stores.filter((s) => s.kind === "shopify");
+  const searched = status.stores.filter((s) => s.kind === "search");
+  const syncBtn = el("button", { class: "text-btn", disabled: status.syncing, onclick: async () => {
+    await api("/sync", { method: "POST", body: "{}" });
+    toast("Updating every shop…");
+    await refreshStatus();
+    storesView();
+  } }, icon("refresh"), status.syncing ? "Updating…" : "Update Now");
+
+  show(page("Stores", { narrow: true, actions: [syncBtn] },
+    el("p", { class: "subtitle", text: "Deal Finder reads these shops’ public catalogues for free and records every price change." }),
+    el("div", { class: "group-label", text: "My sizes" }),
+    el("div", { class: "group" }, inputs.map(([g, input]) =>
+      el("div", { class: "row" }, el("label", { for: input.id, text: labels[g] }), input))),
+    el("p", { class: "group-footer", text: "List every size you wear in each shop’s system, separated by commas. Jackets come in 40, 100 or M depending on the shop." }),
+    el("div", { class: "group-label", text: `Catalogues · free` }),
+    el("div", { class: "group" }, feeds.map((s) =>
+      el("div", { class: "row" },
+        s.syncing ? el("span", { class: "spinner" }) : el("span", { class: `store-dot${s.ok === false ? " bad" : s.ok == null ? " never" : ""}` }),
+        el("div", { class: "grow" },
+          el("span", { text: s.name }),
+          el("span", { class: "sub", text: s.ok === false ? `Couldn’t update: ${s.error || "unknown error"}`
+            : `${s.products.toLocaleString()} items · ${s.on_sale.toLocaleString()} marked down${s.storewide ? " (store-wide)" : ""} · ${ago(s.synced_at)}` })),
+        el("span", { class: "value", style: "font-size:13px", text: s.tier === "premium" ? "Premium" : "Mid" })))),
+    el("div", { class: "group-label", text: "Searched on request · paid" }),
+    el("div", { class: "group" }, searched.map((s) =>
+      el("div", { class: "row" }, el("span", { class: "grow", text: s.name }), el("span", { class: "value", style: "font-size:13px", text: status.extra ? "Ready" : "Needs key" })))),
+    el("p", { class: "group-footer", text: status.extra
+      ? `These shops block catalogue reads. Search them from Deals or Outfit through Serper, about A$0.002 a search. ${status.extra_used_today} of ${status.extra_cap} searches used today.`
+      : "These shops block catalogue reads. Add SERPER_API_KEY to .env to search them on request (free for the first 2,500 searches)." }),
+    el("div", { class: "group-label", text: "AI" }),
+    el("div", { class: "group" }, el("div", { class: "row" }, el("span", { class: "grow", text: "Read briefs with Claude" }),
+      el("span", { class: "value", style: "font-size:13px", text: status.ai ? status.ai_model : "Needs ANTHROPIC_API_KEY" }))),
+  ));
+  if (status.syncing) {
+    poll = setInterval(async () => {
+      await refreshStatus();
+      if (location.hash.startsWith("#/stores")) storesView();
+      if (!status.syncing) clearInterval(poll);
+    }, 3000);
+  }
 }
 
 // ── Router ──────────────────────────────────────────────────
 
 async function route() {
   closeSheet();
-  const [, name, id] = location.hash.split("/");
-  if (name === "hunt" && id) return huntView(id);
-  if (name === "hunts") return huntsView();
-  if (name === "saved") return savedView();
-  return newHuntView();
+  const [path, qs] = location.hash.slice(2).split("?");
+  const params = new URLSearchParams(qs || "");
+  if (path === "outfit") return outfitView();
+  if (path === "saved") return savedView();
+  if (path === "stores") return storesView();
+  return dealsView(params);
 }
 
 window.addEventListener("hashchange", route);
 
 (async function start() {
-  updateSavedCount();
   try {
-    [config] = await Promise.all([api("/config"), refreshHunts()]);
+    await refreshStatus();
   } catch (err) {
-    view.replaceChildren(el("div", { class: "empty" }, el("h2", { text: "Can’t reach the server" }), el("p", { text: err.message })));
+    view.replaceChildren(emptyState("exclaim", "Can’t reach Deal Finder", err.message));
     return;
   }
-  if (!location.hash) history.replaceState(null, "", hunts.length ? "#/hunts" : "#/new");
+  if (!location.hash) history.replaceState(null, "", "#/deals");
   route();
 })();
