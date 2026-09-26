@@ -1,116 +1,13 @@
 // Deal Finder front end. No framework: a hash router, a tiny element
 // builder, and views rendered from the JSON API.
 
-const $ = (sel, root = document) => root.querySelector(sel);
+import { insightsView } from "./insights.js";
+import {
+  $, el, icon, safeUrl, money, ago, sized, api, local, toast,
+  segmented, toggle, emptyState, openSheet, closeSheet,
+} from "./ui.js";
+
 const view = $("#view");
-const CUR = "AUD";
-
-// ── Helpers ─────────────────────────────────────────────────
-
-function el(tag, attrs = {}, ...kids) {
-  const node = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (v == null || v === false) continue;
-    if (k === "class") node.className = v;
-    else if (k === "text") node.textContent = v;
-    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
-    else if (k === "style") node.style.cssText = v;
-    else node.setAttribute(k, v === true ? "" : v);
-  }
-  for (const kid of kids.flat(Infinity)) {
-    if (kid == null || kid === false) continue;
-    node.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
-  }
-  return node;
-}
-
-function icon(name, cls = "") {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("class", `i ${cls}`);
-  svg.setAttribute("aria-hidden", "true");
-  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
-  use.setAttribute("href", `#i-${name}`);
-  svg.append(use);
-  return svg;
-}
-
-const safeUrl = (u) => (typeof u === "string" && /^https?:\/\//i.test(u) ? u : null);
-
-function money(value) {
-  if (value == null) return "";
-  return new Intl.NumberFormat("en-AU", {
-    style: "currency", currency: CUR, minimumFractionDigits: value % 1 ? 2 : 0, maximumFractionDigits: 2,
-  }).format(value);
-}
-
-function ago(iso) {
-  if (!iso) return "never";
-  const mins = Math.round((Date.now() - new Date(iso)) / 6e4);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} min ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs} hr ago`;
-  return new Date(iso).toLocaleDateString("en-AU", { day: "numeric", month: "short" });
-}
-
-// Shopify's image CDN resizes on request; ask for card-sized images.
-function sized(src, width) {
-  const url = safeUrl(src);
-  if (!url) return null;
-  if (/cdn\.shopify\.com|\/cdn\/shop\//.test(url)) return `${url}${url.includes("?") ? "&" : "?"}width=${width}`;
-  return url;
-}
-
-async function api(path, opts = {}) {
-  const res = await fetch(`/api${path}`, { headers: { "Content-Type": "application/json" }, ...opts });
-  if (res.status === 401 && path !== "/login") {
-    location.href = "/login";
-    throw new Error("Sign in first");
-  }
-  if (!res.ok) {
-    let msg = res.statusText;
-    try {
-      const body = await res.json();
-      msg = typeof body.detail === "string" ? body.detail
-        : (body.detail || []).map((d) => `${d.loc?.at(-1)}: ${d.msg}`).join("; ") || msg;
-    } catch { /* keep statusText */ }
-    throw new Error(msg);
-  }
-  return res.status === 204 ? null : res.json();
-}
-
-const local = {
-  get(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } },
-  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode */ } },
-};
-
-let toastTimer;
-function toast(text) {
-  const t = $("#toast");
-  t.textContent = text;
-  t.classList.add("show");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
-}
-
-function segmented(name, options, value, onchange, cls = "") {
-  const node = el("div", { class: `segmented ${cls}`, role: "radiogroup" },
-    options.flatMap(([v, label]) => {
-      const id = `${name}-${v}`;
-      return [
-        el("input", { type: "radio", name, id, value: v, checked: String(v) === String(value) }),
-        el("label", { for: id, text: label }),
-      ];
-    }));
-  if (onchange) node.addEventListener("change", (e) => onchange(e.target.value));
-  return node;
-}
-
-function toggle(checked, onchange, label) {
-  const input = el("input", { type: "checkbox", role: "switch", "aria-label": label, checked });
-  input.addEventListener("change", () => onchange(input.checked));
-  return el("label", { class: "switch" }, input, el("span"));
-}
 
 // ── App state ───────────────────────────────────────────────
 
@@ -122,58 +19,97 @@ let poll = null;
 const updater = { running: false, done: 0, total: 0, current: null };
 const isSyncing = () => status.syncing || updater.running;
 
-async function updateShops(keys) {
-  if (updater.running || !keys.length) return;
+async function updateShops(keys, { rerender = false } = {}) {
+  if (updater.running || !keys.length) return null;
   Object.assign(updater, { running: true, done: 0, total: keys.length });
+  let failed = 0;
   for (const key of keys) {
     updater.current = key;
-    renderFoot();
+    drawRefreshControls();
     if (location.hash.startsWith("#/stores")) storesView();
-    try { await api(`/sync/${encodeURIComponent(key)}`, { method: "POST" }); } catch { /* shown in Stores */ }
+    try { await api(`/sync/${encodeURIComponent(key)}`, { method: "POST" }); } catch { failed++; /* shown in Stores */ }
     updater.done++;
   }
   Object.assign(updater, { running: false, current: null });
   const wasEmpty = status.empty;
   await refreshStatus();
-  if (location.hash.startsWith("#/stores") || wasEmpty) route();
+  if (rerender || wasEmpty || location.hash.startsWith("#/stores")) route();
+  return { failed, total: keys.length };
+}
+
+async function refreshAll() {
+  const feeds = status.stores.filter((s) => s.kind !== "search").map((s) => s.key);
+  toast("Checking every shop for new prices…");
+  const r = await updateShops(feeds, { rerender: true });
+  if (!r) return;
+  toast(r.failed ? `${r.total - r.failed} of ${r.total} shops updated. See Stores for details.` : "Deals are up to date");
+}
+
+const lastUpdated = () => status.stores.map((s) => s.synced_at).filter(Boolean).sort().at(-1);
+
+function refreshLabel() {
+  if (updater.running) {
+    const name = status.stores.find((s) => s.key === updater.current)?.name || "shops";
+    return `Checking ${name} · ${updater.done + 1} of ${updater.total}`;
+  }
+  if (status.syncing) return "Checking shops…";
+  return `Updated ${ago(lastUpdated())}`;
+}
+
+// Every mounted refresh control redraws together as shops update.
+const refreshControls = new Set();
+
+function refreshControl({ compact = false } = {}) {
+  const btn = el("button", { type: "button", class: "refresh-btn", onclick: refreshAll });
+  const note = el("span", { class: "refresh-note", "aria-live": "polite" });
+  const node = el("div", { class: `refresh${compact ? " compact" : ""}` }, btn, note);
+  node.draw = () => {
+    const busy = isSyncing();
+    btn.disabled = busy;
+    btn.classList.toggle("busy", busy);
+    btn.replaceChildren(icon("refresh"), el("span", { text: busy ? "Refreshing" : "Refresh Deals" }));
+    note.textContent = refreshLabel();
+  };
+  node.draw();
+  refreshControls.add(node);
+  return node;
+}
+
+function drawRefreshControls() {
+  for (const node of refreshControls) {
+    if (node.isConnected) node.draw(); else refreshControls.delete(node);
+  }
 }
 
 function renderFoot() {
-  const synced = status.stores.filter((s) => s.synced_at).map((s) => s.synced_at).sort().at(-1);
   const total = status.stores.reduce((a, s) => a + s.products, 0);
-  const name = status.stores.find((s) => s.key === updater.current)?.name;
-  $("#side-foot").textContent = updater.running ? `Updating ${name} · ${updater.done + 1} of ${updater.total}…`
-    : status.syncing ? "Updating shops…"
-      : `${total.toLocaleString()} items across ${status.stores.filter((s) => s.products).length} shops · updated ${ago(synced)}`;
+  const shops = status.stores.filter((s) => s.products).length;
+  $("#side-foot").textContent = `${total.toLocaleString()} items tracked across ${shops} shops`;
+  drawRefreshControls();
 }
 
 async function refreshStatus() {
   status = await api("/status");
   const n = await api("/saved").then((s) => s.length).catch(() => 0);
   $("#saved-count").textContent = n || "";
-  const cats = $("#side-cats");
-  cats.replaceChildren(...status.categories.map((c) =>
-    el("a", { class: "side-hunt", href: `#/deals?category=${encodeURIComponent(c)}`, "data-cat": c, text: c })));
   renderFoot();
   markActive();
 }
 
 function markActive() {
-  const [path, qs] = location.hash.slice(2).split("?");
-  const route = path || "deals";
-  const cat = new URLSearchParams(qs || "").get("category");
-  document.querySelectorAll("[data-nav]").forEach((a) =>
-    a.classList.toggle("active", a.dataset.nav === route && !(route === "deals" && cat)));
-  document.querySelectorAll("[data-cat]").forEach((a) => a.classList.toggle("active", route === "deals" && a.dataset.cat === cat));
+  const path = location.hash.slice(2).split("?")[0] || "deals";
+  const current = path === "analytics" ? "insights" : path;
+  document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === current));
 }
 
 // ── Page chrome ─────────────────────────────────────────────
 
-function page(title, { narrow = false, actions = [] } = {}, ...content) {
+function page(title, { narrow = false, actions = [], aside = null } = {}, ...content) {
   const nav = el("header", { class: "navbar" },
     el("div", { class: "nav-title", "aria-hidden": "true", text: title }), ...actions);
+  const heading = el("h1", { class: "large-title", text: title });
   return el("div", { class: `page${narrow ? " narrow" : ""}` },
-    nav, el("h1", { class: "large-title", text: title }), ...content);
+    nav, aside ? el("div", { class: "title-row" }, heading, aside) : heading, ...content);
 }
 
 function show(node, keepScroll = false) {
@@ -188,9 +124,6 @@ function show(node, keepScroll = false) {
 function onScroll() { document.body.classList.toggle("scrolled", window.scrollY > 36); }
 window.addEventListener("scroll", onScroll, { passive: true });
 
-function emptyState(iconName, title, text, ...actions) {
-  return el("div", { class: "empty" }, icon(iconName), el("h2", { text: title }), el("p", { text }), ...actions);
-}
 
 function storageNotice() {
   if (status.persistent !== false) return null;
@@ -271,17 +204,43 @@ function dealCard(d, { onopen, selected = false, extra = null } = {}) {
   el("div", { class: "card-body" },
     el("div", { class: "brand-line" }, el("b", { text: d.brand }), d.brand !== d.store_name && el("span", { text: d.store_name })),
     el("div", { class: "card-name", text: d.title }),
-    d.colour && !d.title.toLowerCase().includes(d.colour.toLowerCase().split(/[ /]/)[0]) && el("div", { class: "retailer", text: d.colour }),
     priceRow(d),
-    el("div", { class: "card-meta" },
-      el("span", { class: `pill ${labelClass(d.label)}`, text: d.label }),
-      d.fabric === "natural" && el("span", { class: "retailer", text: "Natural" })),
-    d.badges?.length > 0 && el("div", { class: "badges" }, badges(d)),
+    signal(d),
     extra));
   const open = () => (onopen ? onopen(d) : openProduct(d.id));
   card.addEventListener("click", open);
   card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
   return card;
+}
+
+// One reason to look, not five: the strongest signal a card has.
+function signal(d) {
+  const has = (b) => (d.badges || []).includes(b);
+  const [text, cls] = has("Lowest price seen") ? ["Lowest price seen", "low"]
+    : has("Just dropped") ? ["Just dropped", "drop"]
+      : d.label === "Great deal" ? ["Great deal", "great"] : [];
+  return text ? el("div", { class: `signal ${cls}`, text }) : null;
+}
+
+// The single best deal, given the room to sell itself.
+function featureCard(d) {
+  const url = safeUrl(d.url);
+  const was = d.was_price || d.prev_price;
+  const details = el("button", { class: "btn primary", onclick: () => openProduct(d.id) }, "See Details");
+  const well = el("div", { class: "well" }, imageWell(d, 900), favButton(d));
+  well.addEventListener("click", () => openProduct(d.id));
+  return el("article", { class: "feature", "aria-label": "Today’s best deal" },
+    well,
+    el("div", { class: "feature-body" },
+      el("div", { class: "eyebrow", text: "Today’s best deal" }),
+      el("div", { class: "brand-line" }, el("b", { text: d.brand }), d.brand !== d.store_name && el("span", { text: `at ${d.store_name}` })),
+      el("h2", { text: d.title }),
+      el("div", { class: "feature-price" },
+        el("span", { class: "price sale", text: money(d.price) }),
+        was && el("span", { class: "was", text: money(was) })),
+      d.saving > 0 && el("p", { class: "feature-save", text: `You save ${money(d.saving)}. That’s ${offPct(d)}% off.` }),
+      el("div", { class: "feature-actions" }, details,
+        url && el("a", { class: "btn", href: url, target: "_blank", rel: "noopener noreferrer" }, `Shop at ${d.store_name}`, icon("arrow-up-right")))));
 }
 
 function skeletonGrid(n = 8) {
@@ -327,11 +286,14 @@ async function dealsView(params) {
   filters.category = cat ? [cat] : [];
   local.set("df.filters", { ...filters, category: [] });
 
-  const title = cat || "Deals";
+  // A shop link (from Insights) narrows this visit only; saved filters stay as they are.
+  const shop = status.stores.find((s) => s.key === params.get("store"));
+  const title = shop?.name || cat || "Deals";
   const grid = el("div", { class: "grid" });
   const meta = el("div", { class: "result-meta" });
   const more = el("div", { class: "load-more" });
   const extraBox = el("div");
+  const hero = el("div");
 
   const search = el("input", { type: "search", placeholder: "Search brands, styles, colours", "aria-label": "Search deals", value: filters.q, enterkeyhint: "search" });
   let debounce;
@@ -359,9 +321,12 @@ async function dealsView(params) {
     if (!append) { offset = 0; grid.replaceChildren(...skeletonGrid().children); more.replaceChildren(); }
     let r;
     try {
-      r = await api(`/deals?${queryString(filters, offset)}`);
+      r = await api(`/deals?${queryString(shop ? { ...filters, store: [shop.key] } : filters, offset)}`);
     } catch (err) { grid.replaceChildren(el("div", { class: "error-card", text: err.message })); return; }
-    const cards = r.items.map((d) => dealCard(d));
+    // The unfiltered front page leads with its single best deal.
+    const lead = !append && !cat && !shop && !filters.q && !filterCount() && filters.sort === "score" && r.items.length > 4;
+    hero.replaceChildren(lead ? featureCard(r.items[0]) : "");
+    const cards = (lead ? r.items.slice(1) : r.items).map((d) => dealCard(d));
     if (append) grid.append(...cards); else grid.replaceChildren(...cards);
     offset += r.items.length;
     meta.replaceChildren(el("span", { text: `${r.total.toLocaleString()} ${r.total === 1 ? "deal" : "deals"}` }), el("label", { class: "sort" }, "Sort", sortSel));
@@ -387,9 +352,13 @@ async function dealsView(params) {
         icon("chevron", "chev"))));
   }
 
-  show(page(title, {},
+  const shops = status.stores.filter((s) => s.kind !== "search" && s.products).length;
+  show(page(title, { aside: refreshControl() },
+    el("p", { class: "subtitle", text: shop ? `Everything marked down at ${shop.name}, best value first.` : cat ? `Marked-down ${cat.toLowerCase()} from ${shops} shops, best value first.`
+      : `The best markdowns from ${shops} shops, ranked by real value.` }),
     storageNotice(),
     isSyncing() && status.empty ? syncingNotice() : null,
+    hero,
     el("div", { class: "search-row" }, el("label", { class: "searchbar" }, icon("search"), search), filterBtn),
     chips, meta, grid, more, extraBox));
   load();
@@ -567,39 +536,6 @@ async function openProduct(id) {
   ]);
 }
 
-// ── Sheet ───────────────────────────────────────────────────
-
-let lastFocus = null;
-
-function openSheet(title, content) {
-  const sheet = $("#sheet");
-  const backdrop = $("#sheet-backdrop");
-  lastFocus = document.activeElement;
-  const close = el("button", { class: "close-btn", "aria-label": "Close", onclick: closeSheet }, icon("xmark"));
-  sheet.replaceChildren(
-    el("div", { class: "grabber" }),
-    title ? el("div", { class: "sheet-bar" }, el("h2", { id: "sheet-title", text: title }), close) : el("div", { class: "sheet-head" }, close),
-    ...content.filter(Boolean));
-  sheet.hidden = false;
-  backdrop.hidden = false;
-  sheet.classList.remove("closing");
-  backdrop.classList.remove("closing");
-  document.body.style.overflow = "hidden";
-  sheet.scrollTop = 0;
-  close.focus();
-}
-
-function closeSheet() {
-  const sheet = $("#sheet");
-  const backdrop = $("#sheet-backdrop");
-  if (sheet.hidden) return;
-  sheet.classList.add("closing");
-  backdrop.classList.add("closing");
-  document.body.style.overflow = "";
-  setTimeout(() => { sheet.hidden = true; backdrop.hidden = true; lastFocus?.focus?.(); }, 250);
-}
-$("#sheet-backdrop").addEventListener("click", closeSheet);
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
 
 // ── Outfit ──────────────────────────────────────────────────
 
@@ -749,10 +685,8 @@ function storesView() {
 
   const feeds = status.stores.filter((s) => s.kind !== "search");
   const searched = status.stores.filter((s) => s.kind === "search");
-  const syncBtn = el("button", { class: "text-btn", disabled: isSyncing(), onclick: () => {
-    updateShops(feeds.map((s) => s.key));
-    toast("Updating every shop…");
-  } }, icon("refresh"), isSyncing() ? "Updating…" : "Update Now");
+  const syncBtn = el("button", { class: "text-btn", disabled: isSyncing(), onclick: refreshAll },
+    icon("refresh"), isSyncing() ? "Updating…" : "Update Now");
 
   show(page("Stores", { narrow: true, actions: [syncBtn] },
     el("p", { class: "subtitle", text: "Deal Finder reads these shops’ public catalogues for free and records every price change." }),
@@ -799,6 +733,9 @@ async function route() {
   const params = new URLSearchParams(qs || "");
   if (path === "outfit") return outfitView();
   if (path === "saved") return savedView();
+  if (path === "insights" || path === "analytics") {
+    return insightsView({ page, show, dealCard, refreshControl, status: () => status });
+  }
   if (path === "stores") return storesView();
   return dealsView(params);
 }
@@ -812,6 +749,7 @@ window.addEventListener("hashchange", route);
     view.replaceChildren(emptyState("exclaim", "Can’t reach Deal Finder", err.message));
     return;
   }
+  $("#side-refresh").replaceChildren(refreshControl({ compact: true }));
   if (!location.hash) history.replaceState(null, "", "#/deals");
   route();
   // Hosted: nothing runs between visits except the daily cron, so opening the

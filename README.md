@@ -65,7 +65,7 @@ uv run deal_finder
 
 Open <http://127.0.0.1:8000>. The first start downloads every catalogue,
 which takes about two minutes. After that, shops refresh every 12 hours while
-the app runs, and **Stores → Update Now** refreshes them on demand.
+the app runs, and **Refresh Deals** (or **Stores → Update Now**) refreshes them on demand.
 
 Keys are optional. Copy `.env.example` to `.env` to add them:
 
@@ -101,18 +101,24 @@ shop, which takes about two minutes; you can browse as each shop arrives.
 
 How it stays fresh: on the Hobby plan Vercel runs the refresh job once a day
 (between 3 and 4 am Sydney time). Opening the app also refreshes any shop more
-than 12 hours old. **Stores → Update Now** refreshes everything on demand.
+than 12 hours old. **Refresh Deals** refreshes everything on demand.
 
 To try hosted mode locally: `VERCEL=1 APP_PASSWORD=… DATABASE_URL=postgresql://… uv run uvicorn app:app`.
 
 ## The app
 
-* **Deals**: search, category chips, and filters for discount, price, your
+* **Deals**: leads with the day's single best deal, then everything else.
+  **Refresh Deals** checks every shop for new prices, one shop at a time.
+  Search, category chips, and filters for discount, price, your
   sizes, fabric, premium shops, or particular shops. Sort by best deal,
   discount, price or newest. Tap an item to see its price history, sizes in
   stock (yours highlighted) and why it scored as it did.
 * **Outfit**: describe a look and a budget. You get the best-value piece for
   each part, within budget and in your sizes, with alternatives to tap and swap.
+* **Insights**: the whole market at a glance. Total markdowns, how many
+  items are on sale and how deep the cuts go, price drops per day over the
+  last 30 days, which shops and categories have the most on sale, and the
+  biggest recent drops. Tap a shop or category to browse its deals.
 * **Saved**: tap the heart to watch a price. Saved items show how much they
   have moved since you saved them.
 * **Stores**: your sizes, each shop's status, and paid-search usage.
@@ -144,6 +150,7 @@ src/deal_finder/
 ├── db.py          SQLite or Postgres: products, price history, saved items, settings
 ├── auth.py        the hosted app's password and the cron secret
 ├── deals.py       deal score, search and filters, shop mixing
+├── analytics.py   market-wide numbers for the Insights page
 ├── stylist.py     brief → shopping list (presets, keywords, or Claude) → outfit
 ├── extra.py       optional paid search for shops that block catalogue reads
 ├── main.py        command line

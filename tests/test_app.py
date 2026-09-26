@@ -105,3 +105,10 @@ def test_paid_search_filters_caches_and_caps(db, monkeypatch):
     with pytest.raises(RuntimeError, match="limit"):
         extra.search(db, "brown loafers", post=post)
     assert calls == ["mens navy blazer"]
+
+
+def test_analytics(client):
+    r = client.get("/api/analytics").json()
+    assert r["totals"]["tracked"] == 3 and r["totals"]["on_sale"] == 3
+    assert r["top_deals"][0]["title"] == "Navy Wool Coat" and r["top_deals"][0]["saved"] is False
+    assert len(r["drops_by_day"]) == 30 and r["stores"][0]["key"] == "mjbale"

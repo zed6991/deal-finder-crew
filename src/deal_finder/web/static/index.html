@@ -9,6 +9,7 @@
   <title>Deal Finder</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23007AFF'/%3E%3Cpath d='M20 18h14l12 12-16 16-12-12V20z' fill='none' stroke='white' stroke-width='4' stroke-linejoin='round'/%3E%3Ccircle cx='27' cy='27' r='3' fill='white'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/insights.css">
 </head>
 <body>
   <div class="app">
@@ -19,10 +20,11 @@
       </div>
       <a class="side-item" href="#/deals" data-nav="deals"><svg class="i"><use href="#i-tag"/></svg>Deals</a>
       <a class="side-item" href="#/outfit" data-nav="outfit"><svg class="i"><use href="#i-sparkles"/></svg>Outfit</a>
+      <a class="side-item" href="#/insights" data-nav="insights"><svg class="i"><use href="#i-chart"/></svg>Insights</a>
       <a class="side-item" href="#/saved" data-nav="saved"><svg class="i"><use href="#i-heart"/></svg>Saved<span class="side-count" id="saved-count"></span></a>
       <a class="side-item" href="#/stores" data-nav="stores"><svg class="i"><use href="#i-store"/></svg>Stores</a>
-      <div class="side-heading">Categories</div>
-      <div id="side-cats"></div>
+      <div class="side-spacer"></div>
+      <div id="side-refresh"></div>
       <div class="side-foot" id="side-foot"></div>
     </nav>
 
@@ -31,6 +33,7 @@
     <nav class="tabbar" aria-label="Main">
       <a href="#/deals" data-nav="deals"><svg class="i"><use href="#i-tag"/></svg><span>Deals</span></a>
       <a href="#/outfit" data-nav="outfit"><svg class="i"><use href="#i-sparkles"/></svg><span>Outfit</span></a>
+      <a href="#/insights" data-nav="insights"><svg class="i"><use href="#i-chart"/></svg><span>Insights</span></a>
       <a href="#/saved" data-nav="saved"><svg class="i"><use href="#i-heart"/></svg><span>Saved</span></a>
       <a href="#/stores" data-nav="stores"><svg class="i"><use href="#i-store"/></svg><span>Stores</span></a>
     </nav>
@@ -63,6 +66,7 @@
       <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
       <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
       <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 10-2.3 5.7M20 5v6h-6"/></symbol>
+      <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20h16M7 16.5v-5M12 16.5V6M17 16.5v-8"/></symbol>
       <symbol id="i-exclaim" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.3v.2"/></symbol>
     </defs>
   </svg>

@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from deal_finder import auth, extra, stylist
+from deal_finder import analytics, auth, extra, stylist
 from deal_finder.db import DB, ON_VERCEL
 from deal_finder.deals import SIZE_GROUPS, Filters, sale_shares, score_row, search
 from deal_finder.normalize import CATEGORIES
@@ -181,6 +181,14 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
         result = search(db, f, settings()["sizes"])
         saved = db.saved()
         for d in result["items"]:
+            d["saved"] = d["id"] in saved
+        return result
+
+    @app.get("/api/analytics")
+    def insights() -> dict:
+        result = analytics.summary(db)
+        saved = db.saved()
+        for d in [*result["recent_drops"], *result["top_deals"]]:
             d["saved"] = d["id"] in saved
         return result
 
