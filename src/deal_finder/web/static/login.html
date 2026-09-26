@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="noindex">
+  <title>Sign In · Deal Finder</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <style>
+    body { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 16px; }
+    .signin { width: 100%; max-width: 380px; text-align: center; animation: fade-in .4s var(--ease); }
+    .signin .app-icon { width: 72px; height: 72px; border-radius: 17px; margin: 0 auto 18px; }
+    .signin .app-icon .i { width: 38px; height: 38px; stroke-width: 2; }
+    .signin h1 { margin: 0 0 6px; font-size: 28px; font-weight: 700; letter-spacing: 0.01em; }
+    .signin p { margin: 0 0 26px; color: var(--label-2); font-size: 15px; }
+    .signin .group { text-align: left; }
+    .signin input { width: 100%; border: 0; outline: none; background: transparent; font-size: 17px; }
+    .signin .btn { margin-top: 16px; }
+    .signin .error { min-height: 20px; margin-top: 12px; color: var(--red); font-size: 15px; }
+  </style>
+</head>
+<body>
+  <form class="signin" id="form">
+    <div class="app-icon" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><path d="M3.5 12.2V4.5a1 1 0 011-1h7.7l8.3 8.3a1.5 1.5 0 010 2.1l-6.6 6.6a1.5 1.5 0 01-2.1 0z"/><circle cx="8" cy="8" r="1.4"/></svg></div>
+    <h1>Deal Finder</h1>
+    <p>Enter your password to continue.</p>
+    <div class="group">
+      <div class="row"><input id="password" type="password" autocomplete="current-password" placeholder="Password" aria-label="Password" required autofocus></div>
+    </div>
+    <button class="btn primary large" id="go" type="submit">Sign In</button>
+    <div class="error" id="error" role="alert"></div>
+  </form>
+  <script>
+    const form = document.getElementById("form");
+    const go = document.getElementById("go");
+    const error = document.getElementById("error");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      go.disabled = true;
+      error.textContent = "";
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: document.getElementById("password").value }),
+      });
+      if (res.ok) { location.href = "/"; return; }
+      error.textContent = res.status === 401 ? "That password isn’t right." : "Couldn’t sign in. Try again.";
+      go.disabled = false;
+      document.getElementById("password").select();
+    });
+  </script>
+</body>
+</html>

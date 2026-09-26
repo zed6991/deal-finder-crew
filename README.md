@@ -68,6 +68,34 @@ Keys are optional. Copy `.env.example` to `.env` to add them:
   lists like "navy blazer, white shirt, brown loafers" are read word by word.
 * `SERPER_API_KEY` turns on searching THE ICONIC, David Jones and Country Road.
 
+## Host it on Vercel
+
+The repo deploys to Vercel as-is (`app.py` is the entrypoint; `vercel.json`
+sets the Sydney region, a 5-minute limit and a daily refresh). All of it fits
+Vercel's free Hobby plan and Neon's free Postgres plan.
+
+1. **Import the repo.** In Vercel choose **Add New → Project**, pick
+   `deal-finder-crew` and deploy. Or use
+   [this link](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fzed6991%2Fdeal-finder-crew&env=APP_PASSWORD,CRON_SECRET&envDescription=APP_PASSWORD%20is%20your%20sign-in%20password.%20CRON_SECRET%20is%20any%20long%20random%20string.).
+2. **Add a database.** In the project open **Storage → Create Database → Neon**
+   (Postgres, free) and pick the Sydney region. Vercel adds `DATABASE_URL` for you.
+3. **Set two environment variables** under **Settings → Environment Variables**:
+   * `APP_PASSWORD`: the password for signing in. The hosted app is on the open
+     internet, so it will not start without one.
+   * `CRON_SECRET`: any random string of 16+ characters. Vercel sends it with
+     the daily refresh so nobody else can trigger it.
+   * Optional: `ANTHROPIC_API_KEY`, `SERPER_API_KEY`, as for running locally.
+4. **Redeploy** (Deployments → ⋯ → Redeploy) so the variables take effect.
+
+Open the site and sign in. The first visit downloads every catalogue, shop by
+shop, which takes about two minutes; you can browse as each shop arrives.
+
+How it stays fresh: on the Hobby plan Vercel runs the refresh job once a day
+(between 3 and 4 am Sydney time). Opening the app also refreshes any shop more
+than 12 hours old. **Stores → Update Now** refreshes everything on demand.
+
+To try hosted mode locally: `VERCEL=1 APP_PASSWORD=… DATABASE_URL=postgresql://… uv run uvicorn app:app`.
+
 ## The app
 
 * **Deals**: search, category chips, and filters for discount, price, your
@@ -104,7 +132,8 @@ src/deal_finder/
 ├── stores.py      the shops, their tier, and how to tell menswear apart
 ├── sync.py        downloads catalogues politely (paged, retried, throttled)
 ├── normalize.py   raw product → category, fabric, colour, sizes, price, was price
-├── db.py          SQLite: products, price history, saved items, settings, cache
+├── db.py          SQLite or Postgres: products, price history, saved items, settings
+├── auth.py        the hosted app's password and the cron secret
 ├── deals.py       deal score, search and filters, shop mixing
 ├── stylist.py     brief → shopping list (presets, keywords, or Claude) → outfit
 ├── extra.py       optional paid search for shops that block catalogue reads
@@ -112,14 +141,16 @@ src/deal_finder/
 └── web/           FastAPI app and the front end (plain HTML, CSS and JS)
 ```
 
-Data lives in `data/deals.db`. Delete it to start afresh.
+Data lives in `data/deals.db` locally, or in Postgres when `DATABASE_URL` is
+set (as on Vercel). Delete the file to start afresh.
 
 ## Tests
 
 ```bash
 uv run pytest
+TEST_DATABASE_URL=postgresql://localhost/test uv run pytest   # also run every database test on Postgres
 ```
 
-62 tests cover categories, fabric rules, menswear filtering, price tracking,
+The tests cover categories, fabric rules, menswear filtering, price tracking,
 scoring, sizes, search, outfits, the Claude call (with a fake client), paid
-search limits and the API. None of them use the network.
+search limits, sign-in, the cron job and the API. None of them use the network.

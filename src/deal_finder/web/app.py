@@ -2,23 +2,28 @@
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from deal_finder import extra, stylist
-from deal_finder.db import DB
+from deal_finder import auth, extra, stylist
+from deal_finder.db import DB, ON_VERCEL
 from deal_finder.deals import SIZE_GROUPS, Filters, sale_shares, score_row, search
 from deal_finder.normalize import CATEGORIES
-from deal_finder.stores import BY_KEY, FEEDS, SEARCHED, STORES
+from deal_finder.stores import BY_KEY, SEARCHED, STORES
 from deal_finder.sync import Syncer
 
 STATIC = Path(__file__).parent / "static"
 DEFAULT_SETTINGS = {"sizes": {g: "" for g in SIZE_GROUPS}}
+# Leave headroom under Vercel's 300 s function limit.
+CRON_BUDGET = float(os.environ.get("DEAL_FINDER_CRON_BUDGET", "240"))
+OPEN_PATHS = ("/login", "/api/login", "/static/", "/api/cron/", "/favicon.ico")
 
 
 class Settings(BaseModel):
@@ -36,16 +41,33 @@ class OutfitRequest(BaseModel):
     stores: list[str] = Field(default_factory=list)
 
 
-class SyncRequest(BaseModel):
-    stores: list[str] = Field(default_factory=list)
+class Login(BaseModel):
+    password: str = Field(max_length=200)
 
 
-def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bool = True) -> FastAPI:
+def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bool | None = None) -> FastAPI:
     db = db or DB()
     syncer = syncer or Syncer(db)
-    app = FastAPI(title="Deal Finder", docs_url="/api/docs")
-    if auto_sync:
+    app = FastAPI(title="Deal Finder", docs_url=None if ON_VERCEL else "/api/docs", redoc_url=None)
+    # Serverless functions freeze between requests, so no background loop there;
+    # the daily cron and the page itself keep shops fresh instead.
+    if auto_sync if auto_sync is not None else not ON_VERCEL:
         syncer.keep_fresh()
+
+    @app.middleware("http")
+    async def require_login(request: Request, call_next):
+        path = request.url.path
+        if path.startswith(OPEN_PATHS):
+            return await call_next(request)
+        if not auth.configured():
+            if auth.required():
+                return HTMLResponse(auth.SETUP_PAGE, status_code=503)
+            return await call_next(request)
+        if auth.valid(request.cookies.get(auth.COOKIE)):
+            return await call_next(request)
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "Sign in first"}, status_code=401)
+        return RedirectResponse("/login", status_code=303)
 
     def settings() -> dict:
         s = db.get("settings", DEFAULT_SETTINGS)
@@ -57,13 +79,35 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
             raise HTTPException(404, "No such product")
         return score_row(row, sale_shares(db))
 
+    # ── Sign in ───────────────────────────────────────────────
+
+    @app.get("/login", include_in_schema=False)
+    def login_page() -> FileResponse:
+        return FileResponse(STATIC / "login.html")
+
+    @app.post("/api/login", status_code=204)
+    def login(body: Login, response: Response) -> None:
+        if not auth.configured():
+            return
+        if not auth.check_password(body.password):
+            time.sleep(1)  # slow down guessing
+            raise HTTPException(401, "Wrong password")
+        auth.set_cookie(response)
+
+    @app.post("/api/logout", status_code=204)
+    def logout(response: Response) -> None:
+        response.delete_cookie(auth.COOKIE, path="/")
+
+    # ── Status and syncing ────────────────────────────────────
+
     @app.get("/api/status")
     def status() -> dict:
         syncs = db.syncs()
         counts = {r["store"]: (r["n"], r["deals"]) for r in db.query(
-            "SELECT store, COUNT(*) n, SUM(was_price IS NOT NULL) deals FROM products "
+            "SELECT store, COUNT(*) n, COUNT(was_price) deals FROM products "
             "WHERE active = 1 AND in_stock = 1 GROUP BY store")}
         shares = sale_shares(db)
+        stale = {s.key for s in syncer.stale()}
         stores = []
         for s in STORES:
             sync = syncs.get(s.key)
@@ -76,6 +120,7 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
                 "ok": bool(sync["ok"]) if sync else None,
                 "error": sync["error"] if sync else None,
                 "syncing": s.key in syncer.running,
+                "stale": s.key in stale,
             })
         return {
             "stores": stores,
@@ -89,12 +134,27 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
             "extra_cap": extra.DAILY_CAP,
             "syncing": bool(syncer.running),
             "empty": not counts,
+            "hosted": ON_VERCEL,
+            "persistent": db.persistent,
+            "signed_in": auth.configured(),
         }
 
-    @app.post("/api/sync", status_code=202)
-    def start_sync(body: SyncRequest) -> dict:
-        stores = [BY_KEY[k] for k in body.stores if k in BY_KEY and BY_KEY[k].kind == "shopify"] or FEEDS
-        return {"started": syncer.sync_in_background(stores)}
+    @app.post("/api/sync/{store}")
+    def sync_store(store: str) -> dict:
+        """Refresh one shop and wait for it. The page calls this shop by shop."""
+        s = BY_KEY.get(store)
+        if s is None or s.kind != "shopify":
+            raise HTTPException(404, "No such shop")
+        return syncer.sync_store(s)
+
+    @app.get("/api/cron/sync")
+    def cron_sync(request: Request) -> dict:
+        """Vercel Cron: refresh stale shops until the time budget runs out."""
+        if not auth.cron_ok(request.headers.get("authorization")):
+            raise HTTPException(401, "Unauthorized")
+        return syncer.sync_until(time.monotonic() + CRON_BUDGET)
+
+    # ── Deals ─────────────────────────────────────────────────
 
     @app.get("/api/deals")
     def deals(

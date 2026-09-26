@@ -13,6 +13,7 @@ from .conftest import raw
 @pytest.fixture
 def client(db, monkeypatch):
     monkeypatch.delenv("SERPER_API_KEY", raising=False)
+    monkeypatch.delenv("APP_PASSWORD", raising=False)
     s = BY_KEY["mjbale"]
     db.record("mjbale", [from_shopify(s, r) for r in [
         raw("coat", "Navy Wool Coat", 300, 700, ptype="Outerwear", tags=["comp:100% Wool"]),
@@ -72,8 +73,10 @@ def test_paid_search_needs_a_key(client):
     assert r.status_code == 400 and "SERPER_API_KEY" in r.json()["detail"]
 
 
-def test_sync_starts_in_background(client):
-    assert client.post("/api/sync", json={}).json() == {"started": True}
+def test_sync_one_shop(client):
+    assert client.post("/api/sync/mjbale").json() == {"error": "no menswear found in the catalogue"}
+    assert client.post("/api/sync/theiconic").status_code == 404
+    assert client.post("/api/sync/nope").status_code == 404
 
 
 def test_paid_search_filters_caches_and_caps(db, monkeypatch):

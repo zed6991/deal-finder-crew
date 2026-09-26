@@ -32,12 +32,18 @@ def fetch_shopify(store: Store, session: requests.Session | None = None, pause: 
     products: list[dict] = []
     for page in range(1, MAX_PAGES + 1):
         for attempt in range(4):
-            resp = http.get(
-                f"{store.base_url}/products.json",
-                params={"limit": PAGE_SIZE, "page": page},
-                headers=HEADERS,
-                timeout=30,
-            )
+            try:
+                resp = http.get(
+                    f"{store.base_url}/products.json",
+                    params={"limit": PAGE_SIZE, "page": page},
+                    headers=HEADERS,
+                    timeout=30,
+                )
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt == 3:
+                    raise
+                time.sleep(2 ** (attempt + 1))  # dropped connection: back off and retry
+                continue
             if resp.status_code not in (429, 500, 502, 503, 504) or attempt == 3:
                 break
             # Shops throttle quick page runs; wait as asked, or back off.
@@ -99,11 +105,21 @@ class Syncer:
         finally:
             self._lock.release()
 
-    def sync_in_background(self, stores: list[Store] | None = None) -> bool:
-        if self._lock.locked():
-            return False
-        threading.Thread(target=self.sync, args=(stores,), daemon=True, name="sync").start()
-        return True
+    def sync_until(self, deadline: float, stores: list[Store] | None = None) -> dict:
+        """Refresh stale shops one at a time, oldest first, until the deadline.
+
+        Used by the hosted daily cron, where a request has a time limit.
+        Shops left over are picked up by the next run or by the page.
+        """
+        done = self.db.syncs()
+        queue = sorted(self.stale(stores or FEEDS), key=lambda s: (done.get(s.key) or {}).get("at") or "")
+        results, skipped = {}, []
+        for i, store in enumerate(queue):
+            if time.monotonic() > deadline:
+                skipped = [s.key for s in queue[i:]]
+                break
+            results[store.key] = self.sync_store(store)
+        return {"synced": results, "skipped": skipped}
 
     def keep_fresh(self, every: timedelta = timedelta(hours=1)) -> None:
         """Background loop: sync whatever has gone stale."""

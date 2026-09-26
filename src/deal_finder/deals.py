@@ -144,32 +144,33 @@ def score_row(row: sqlite3.Row | dict, shares: dict[str, float], at: datetime | 
 
 
 def search(db: DB, f: Filters, sizes: dict[str, str] | None = None) -> dict:
-    """Filter in SQL, score in Python, then sort and page."""
-    where, args = ["active = 1"], []
-    if f.in_stock:
-        where.append("in_stock = 1")
-    if f.categories:
-        where.append(f"category IN ({','.join('?' * len(f.categories))})")
-        args += f.categories
-    stores = [s for s in f.stores if s in BY_KEY]
+    """Filter and score the cached catalogue, then sort and page."""
+    stores = {s for s in f.stores if s in BY_KEY}
     if f.premium_only:
-        premium = [k for k, s in BY_KEY.items() if s.tier == "premium"]
-        stores = [s for s in stores if s in premium] if stores else premium
-    if stores:
-        where.append(f"store IN ({','.join('?' * len(stores))})")
-        args += stores
-    if f.max_price:
-        where.append("price <= ?")
-        args.append(f.max_price)
-    if f.fabric == "natural":
-        where.append("fabric = 'natural'")
-    elif f.fabric == "stretch":
-        where.append("fabric IN ('natural', 'stretch')")
-    for word in f.q.split()[:8]:
-        where.append("(title LIKE ? OR brand LIKE ? OR colour LIKE ? OR category LIKE ? OR composition LIKE ?)")
-        args += [f"%{word}%"] * 5
+        premium = {k for k, s in BY_KEY.items() if s.tier == "premium"}
+        stores = stores & premium if stores else premium
+    cats = set(f.categories)
+    fabrics = {"natural": {"natural"}, "stretch": {"natural", "stretch"}}.get(f.fabric)
+    words = [w.lower() for w in f.q.split()[:8]]
 
-    rows = db.query(f"SELECT * FROM products WHERE {' AND '.join(where)}", args)
+    def keep(r: dict) -> bool:
+        if f.in_stock and not r["in_stock"]:
+            return False
+        if cats and r["category"] not in cats:
+            return False
+        if stores and r["store"] not in stores:
+            return False
+        if f.max_price and r["price"] > f.max_price:
+            return False
+        if fabrics and r["fabric"] not in fabrics:
+            return False
+        if words:
+            text = " ".join(str(r[k] or "") for k in ("title", "brand", "colour", "category", "composition")).lower()
+            if not all(w in text for w in words):
+                return False
+        return True
+
+    rows = [r for r in db.catalogue() if keep(r)]
     shares = sale_shares(db)
     at = datetime.now(timezone.utc)
     items = []

@@ -25,16 +25,24 @@ class FakeSession:
 
     def get(self, url, params, headers, timeout):
         self.calls.append(params["page"])
-        return self.pages.pop(0)
+        page = self.pages.pop(0)
+        if isinstance(page, Exception):
+            raise page
+        return page
 
 
 def test_fetch_pages_until_short_page_and_retries_throttling(monkeypatch):
     monkeypatch.setattr("deal_finder.sync.time.sleep", lambda s: None)
     full = [raw(f"p{i}", "Shirt", 10) for i in range(250)]
-    session = FakeSession([FakeResponse(200, full), FakeResponse(503), FakeResponse(200, full[:3])])
+    import requests
+
+    session = FakeSession([
+        FakeResponse(200, full), FakeResponse(503),
+        requests.ConnectionError("Connection reset by peer"), FakeResponse(200, full[:3]),
+    ])
     got = fetch_shopify(BY_KEY["mjbale"], session)
     assert len(got) == 253
-    assert session.calls == [1, 2, 2]
+    assert session.calls == [1, 2, 2, 2]
 
 
 def test_one_broken_shop_does_not_stop_the_rest(db):

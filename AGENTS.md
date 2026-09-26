@@ -5,6 +5,11 @@ longer uses CrewAI.
 
 * Run the tests with `uv run pytest`. They must not touch the network; use
   the fakes in `tests/` (fake `fetch`, fake Serper `post`, fake Anthropic client).
+  Set `TEST_DATABASE_URL` to a scratch Postgres to run the database tests there too.
+* SQL must work on both SQLite and Postgres: `?` placeholders, `ON CONFLICT`
+  upserts, no `PRAGMA` outside `db.py`, no SQLite-only functions.
+* The app also runs on Vercel (`app.py`, `vercel.json`): no background threads
+  there, each request under 300 s, and every page behind `APP_PASSWORD`.
 * Keep costs at zero by default. Anything paid (Claude, Serper) must be
   optional, capped or cached, and shown to the user as paid.
 * Category, gender and skip rules live in `normalize.py`. Rule order matters;

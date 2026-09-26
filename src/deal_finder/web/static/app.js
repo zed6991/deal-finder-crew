@@ -63,6 +63,10 @@ function sized(src, width) {
 
 async function api(path, opts = {}) {
   const res = await fetch(`/api${path}`, { headers: { "Content-Type": "application/json" }, ...opts });
+  if (res.status === 401 && path !== "/login") {
+    location.href = "/login";
+    throw new Error("Sign in first");
+  }
   if (!res.ok) {
     let msg = res.statusText;
     try {
@@ -113,6 +117,36 @@ function toggle(checked, onchange, label) {
 let status = { stores: [], categories: [], settings: { sizes: {} }, size_groups: {} };
 let poll = null;
 
+// Shops refresh one request at a time, driven from the page, so each request
+// stays well inside a hosted function's time limit.
+const updater = { running: false, done: 0, total: 0, current: null };
+const isSyncing = () => status.syncing || updater.running;
+
+async function updateShops(keys) {
+  if (updater.running || !keys.length) return;
+  Object.assign(updater, { running: true, done: 0, total: keys.length });
+  for (const key of keys) {
+    updater.current = key;
+    renderFoot();
+    if (location.hash.startsWith("#/stores")) storesView();
+    try { await api(`/sync/${encodeURIComponent(key)}`, { method: "POST" }); } catch { /* shown in Stores */ }
+    updater.done++;
+  }
+  Object.assign(updater, { running: false, current: null });
+  const wasEmpty = status.empty;
+  await refreshStatus();
+  if (location.hash.startsWith("#/stores") || wasEmpty) route();
+}
+
+function renderFoot() {
+  const synced = status.stores.filter((s) => s.synced_at).map((s) => s.synced_at).sort().at(-1);
+  const total = status.stores.reduce((a, s) => a + s.products, 0);
+  const name = status.stores.find((s) => s.key === updater.current)?.name;
+  $("#side-foot").textContent = updater.running ? `Updating ${name} · ${updater.done + 1} of ${updater.total}…`
+    : status.syncing ? "Updating shops…"
+      : `${total.toLocaleString()} items across ${status.stores.filter((s) => s.products).length} shops · updated ${ago(synced)}`;
+}
+
 async function refreshStatus() {
   status = await api("/status");
   const n = await api("/saved").then((s) => s.length).catch(() => 0);
@@ -120,10 +154,7 @@ async function refreshStatus() {
   const cats = $("#side-cats");
   cats.replaceChildren(...status.categories.map((c) =>
     el("a", { class: "side-hunt", href: `#/deals?category=${encodeURIComponent(c)}`, "data-cat": c, text: c })));
-  const synced = status.stores.filter((s) => s.synced_at).map((s) => s.synced_at).sort().at(-1);
-  const total = status.stores.reduce((a, s) => a + s.products, 0);
-  $("#side-foot").textContent = status.syncing ? "Updating shops…"
-    : `${total.toLocaleString()} items across ${status.stores.filter((s) => s.products).length} shops · updated ${ago(synced)}`;
+  renderFoot();
   markActive();
 }
 
@@ -159,6 +190,15 @@ window.addEventListener("scroll", onScroll, { passive: true });
 
 function emptyState(iconName, title, text, ...actions) {
   return el("div", { class: "empty" }, icon(iconName), el("h2", { text: title }), el("p", { text }), ...actions);
+}
+
+function storageNotice() {
+  if (status.persistent !== false) return null;
+  return el("div", { class: "notice" },
+    el("div", { class: "badge-icon" }, icon("exclaim")),
+    el("div", {},
+      el("h3", { text: "Add a database to keep your data" }),
+      el("p", { style: "margin:0", text: "Without one, prices, price history and saved items are lost whenever Vercel restarts the app. In your Vercel project, open Storage and add Neon Postgres (free), then redeploy." })));
 }
 
 function syncingNotice() {
@@ -346,14 +386,15 @@ async function dealsView(params) {
   }
 
   show(page(title, {},
-    status.syncing && status.empty ? syncingNotice() : null,
+    storageNotice(),
+    isSyncing() && status.empty ? syncingNotice() : null,
     el("div", { class: "search-row" }, el("label", { class: "searchbar" }, icon("search"), search), filterBtn),
     chips, meta, grid, more, extraBox));
   load();
-  if (status.syncing) {
+  if (isSyncing()) {
     poll = setInterval(async () => {
       await refreshStatus();
-      if (!status.syncing) { clearInterval(poll); load(); }
+      if (!isSyncing()) { clearInterval(poll); load(); }
     }, 5000);
   }
 }
@@ -611,7 +652,7 @@ function outfitView() {
 
   show(page("Outfit", { narrow: true },
     el("p", { class: "subtitle", text: "Describe a look and a budget. You get the best-value piece for each part of it, with alternatives." }),
-    status.empty ? syncingNotice() : null, formEl, results));
+    storageNotice(), status.empty ? syncingNotice() : null, formEl, results));
 }
 
 function renderOutfit(r, box) {
@@ -700,12 +741,10 @@ function storesView() {
 
   const feeds = status.stores.filter((s) => s.kind === "shopify");
   const searched = status.stores.filter((s) => s.kind === "search");
-  const syncBtn = el("button", { class: "text-btn", disabled: status.syncing, onclick: async () => {
-    await api("/sync", { method: "POST", body: "{}" });
+  const syncBtn = el("button", { class: "text-btn", disabled: isSyncing(), onclick: () => {
+    updateShops(feeds.map((s) => s.key));
     toast("Updating every shop…");
-    await refreshStatus();
-    storesView();
-  } }, icon("refresh"), status.syncing ? "Updating…" : "Update Now");
+  } }, icon("refresh"), isSyncing() ? "Updating…" : "Update Now");
 
   show(page("Stores", { narrow: true, actions: [syncBtn] },
     el("p", { class: "subtitle", text: "Deal Finder reads these shops’ public catalogues for free and records every price change." }),
@@ -716,7 +755,7 @@ function storesView() {
     el("div", { class: "group-label", text: `Catalogues · free` }),
     el("div", { class: "group" }, feeds.map((s) =>
       el("div", { class: "row" },
-        s.syncing ? el("span", { class: "spinner" }) : el("span", { class: `store-dot${s.ok === false ? " bad" : s.ok == null ? " never" : ""}` }),
+        s.syncing || updater.current === s.key ? el("span", { class: "spinner" }) : el("span", { class: `store-dot${s.ok === false ? " bad" : s.ok == null ? " never" : ""}` }),
         el("div", { class: "grow" },
           el("span", { text: s.name }),
           el("span", { class: "sub", text: s.ok === false ? `Couldn’t update: ${s.error || "unknown error"}`
@@ -731,6 +770,9 @@ function storesView() {
     el("div", { class: "group-label", text: "AI" }),
     el("div", { class: "group" }, el("div", { class: "row" }, el("span", { class: "grow", text: "Read briefs with Claude" }),
       el("span", { class: "value", style: "font-size:13px", text: status.ai ? status.ai_model : "Needs ANTHROPIC_API_KEY" }))),
+    status.signed_in && el("div", { class: "group", style: "margin-top:28px" },
+      el("button", { class: "row", style: "width:100%;border:0;background:none;cursor:pointer;color:var(--red);font-size:17px",
+        onclick: async () => { await api("/logout", { method: "POST" }); location.href = "/login"; } }, "Sign Out")),
   ));
   if (status.syncing) {
     poll = setInterval(async () => {
@@ -764,4 +806,9 @@ window.addEventListener("hashchange", route);
   }
   if (!location.hash) history.replaceState(null, "", "#/deals");
   route();
+  // Hosted: nothing runs between visits except the daily cron, so opening the
+  // app refreshes any shop older than 12 hours. Locally the server does this.
+  if (status.hosted && !status.syncing) {
+    updateShops(status.stores.filter((s) => s.kind === "shopify" && s.stale).map((s) => s.key));
+  }
 })();
