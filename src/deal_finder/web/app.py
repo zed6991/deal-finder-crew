@@ -2,31 +2,42 @@
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from deal_finder import extra, stylist
-from deal_finder.db import DB
+from deal_finder import analytics, auth, extra, style, stylist
+from deal_finder.db import DB, ON_VERCEL
 from deal_finder.deals import SIZE_GROUPS, Filters, sale_shares, score_row, search
 from deal_finder.normalize import CATEGORIES
-from deal_finder.stores import BY_KEY, FEEDS, SEARCHED, STORES
+from deal_finder.stores import BY_KEY, SEARCHED, STORES
 from deal_finder.sync import Syncer
 
 STATIC = Path(__file__).parent / "static"
 DEFAULT_SETTINGS = {"sizes": {g: "" for g in SIZE_GROUPS}}
+# Leave headroom under Vercel's 300 s function limit.
+CRON_BUDGET = float(os.environ.get("DEAL_FINDER_CRON_BUDGET", "240"))
+OPEN_PATHS = ("/login", "/api/login", "/static/", "/api/cron/", "/favicon.ico")
 
 
 class Settings(BaseModel):
     sizes: dict[str, str] = Field(default_factory=dict)
 
 
+Look = Literal[("", *style.AESTHETICS)]  # type: ignore[valid-type]
+Occasion = Literal[("", *style.OCCASIONS)]  # type: ignore[valid-type]
+
+
 class OutfitRequest(BaseModel):
-    brief: str = Field(min_length=2, max_length=400)
+    brief: str = Field("", max_length=400)
+    aesthetic: Look = ""
+    occasion: Occasion = ""
     budget: float = Field(gt=0, le=20_000)
     use_ai: bool = False
     my_sizes: bool = True
@@ -35,17 +46,40 @@ class OutfitRequest(BaseModel):
     include_storewide: bool = True
     stores: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def wants_something(self):
+        if len(self.brief.strip()) < 2 and not (self.aesthetic or self.occasion):
+            raise ValueError("Describe what you need, or pick a look or an occasion")
+        return self
 
-class SyncRequest(BaseModel):
-    stores: list[str] = Field(default_factory=list)
+
+class Login(BaseModel):
+    password: str = Field(max_length=200)
 
 
-def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bool = True) -> FastAPI:
+def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bool | None = None) -> FastAPI:
     db = db or DB()
     syncer = syncer or Syncer(db)
-    app = FastAPI(title="Deal Finder", docs_url="/api/docs")
-    if auto_sync:
+    app = FastAPI(title="Deal Finder", docs_url=None if ON_VERCEL else "/api/docs", redoc_url=None)
+    # Serverless functions freeze between requests, so no background loop there;
+    # the daily cron and the page itself keep shops fresh instead.
+    if auto_sync if auto_sync is not None else not ON_VERCEL:
         syncer.keep_fresh()
+
+    @app.middleware("http")
+    async def require_login(request: Request, call_next):
+        path = request.url.path
+        if path.startswith(OPEN_PATHS):
+            return await call_next(request)
+        if not auth.configured():
+            if auth.required():
+                return HTMLResponse(auth.SETUP_PAGE, status_code=503)
+            return await call_next(request)
+        if auth.valid(request.cookies.get(auth.COOKIE)):
+            return await call_next(request)
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "Sign in first"}, status_code=401)
+        return RedirectResponse("/login", status_code=303)
 
     def settings() -> dict:
         s = db.get("settings", DEFAULT_SETTINGS)
@@ -57,13 +91,35 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
             raise HTTPException(404, "No such product")
         return score_row(row, sale_shares(db))
 
+    # ── Sign in ───────────────────────────────────────────────
+
+    @app.get("/login", include_in_schema=False)
+    def login_page() -> FileResponse:
+        return FileResponse(STATIC / "login.html")
+
+    @app.post("/api/login", status_code=204)
+    def login(body: Login, response: Response) -> None:
+        if not auth.configured():
+            return
+        if not auth.check_password(body.password):
+            time.sleep(1)  # slow down guessing
+            raise HTTPException(401, "Wrong password")
+        auth.set_cookie(response)
+
+    @app.post("/api/logout", status_code=204)
+    def logout(response: Response) -> None:
+        response.delete_cookie(auth.COOKIE, path="/")
+
+    # ── Status and syncing ────────────────────────────────────
+
     @app.get("/api/status")
     def status() -> dict:
         syncs = db.syncs()
         counts = {r["store"]: (r["n"], r["deals"]) for r in db.query(
-            "SELECT store, COUNT(*) n, SUM(was_price IS NOT NULL) deals FROM products "
+            "SELECT store, COUNT(*) n, COUNT(was_price) deals FROM products "
             "WHERE active = 1 AND in_stock = 1 GROUP BY store")}
         shares = sale_shares(db)
+        stale = {s.key for s in syncer.stale()}
         stores = []
         for s in STORES:
             sync = syncs.get(s.key)
@@ -76,6 +132,7 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
                 "ok": bool(sync["ok"]) if sync else None,
                 "error": sync["error"] if sync else None,
                 "syncing": s.key in syncer.running,
+                "stale": s.key in stale,
             })
         return {
             "stores": stores,
@@ -83,18 +140,43 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
             "size_groups": {g: cats for g, cats in SIZE_GROUPS.items()},
             "settings": settings(),
             "ai": stylist.ai_available(),
-            "ai_model": stylist.MODEL,
+            "ai_model": stylist.ai_model(),
+            "aesthetics": style.AESTHETICS,
+            "occasions": style.OCCASIONS,
+            "labels": {
+                **style.counts(db), "ai": style.available(), "model": style.LABEL_MODEL,
+                "used_today": style.used_today(db), "cap": style.LABEL_CAP,
+            },
             "extra": extra.available(),
             "extra_used_today": extra.used_today(db),
             "extra_cap": extra.DAILY_CAP,
             "syncing": bool(syncer.running),
             "empty": not counts,
+            "hosted": ON_VERCEL,
+            "persistent": db.persistent,
+            "signed_in": auth.configured(),
         }
 
-    @app.post("/api/sync", status_code=202)
-    def start_sync(body: SyncRequest) -> dict:
-        stores = [BY_KEY[k] for k in body.stores if k in BY_KEY and BY_KEY[k].kind == "shopify"] or FEEDS
-        return {"started": syncer.sync_in_background(stores)}
+    @app.post("/api/sync/{store}")
+    def sync_store(store: str) -> dict:
+        """Refresh one shop and wait for it. The page calls this shop by shop."""
+        s = BY_KEY.get(store)
+        if s is None or s.kind == "search":
+            raise HTTPException(404, "No such shop")
+        return syncer.sync_store(s)
+
+    @app.get("/api/cron/sync")
+    def cron_sync(request: Request) -> dict:
+        """Vercel Cron: refresh stale shops until the time budget runs out."""
+        if not auth.cron_ok(request.headers.get("authorization")):
+            raise HTTPException(401, "Unauthorized")
+        deadline = time.monotonic() + CRON_BUDGET
+        result = syncer.sync_until(deadline)
+        # Spare time labels anything a shop's own sync ran out of time for.
+        result["labels"] = style.label_new(db, budget_s=max(0, deadline - time.monotonic()))
+        return result
+
+    # ── Deals ─────────────────────────────────────────────────
 
     @app.get("/api/deals")
     def deals(
@@ -102,24 +184,35 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
         category: list[str] = Query(default=[]),
         store: list[str] = Query(default=[]),
         min_discount: int = Query(0, ge=0, le=95),
-        max_price: float | None = Query(None, gt=0),
+        min_price: float | None = Query(None, ge=0),
+        max_price: float | None = Query(None, ge=0),
         fabric: Literal["any", "natural", "stretch"] = "any",
         my_sizes: bool = False,
         premium_only: bool = False,
         include_storewide: bool = True,
+        look: Look = Query("", alias="style"),
+        occasion: Occasion = "",
         sort: Literal["score", "discount", "price", "price_desc", "newest"] = "score",
         limit: int = Query(48, ge=1, le=200),
         offset: int = Query(0, ge=0),
     ) -> dict:
         f = Filters(
             q=q[:100], categories=[c for c in category if c in CATEGORIES], stores=store,
-            min_discount=min_discount, max_price=max_price, fabric=fabric, my_sizes=my_sizes,
-            premium_only=premium_only, include_storewide=include_storewide, sort=sort,
-            limit=limit, offset=offset,
+            min_discount=min_discount, min_price=min_price, max_price=max_price, fabric=fabric, my_sizes=my_sizes,
+            premium_only=premium_only, include_storewide=include_storewide, style=look, occasion=occasion,
+            sort=sort, limit=limit, offset=offset,
         )
         result = search(db, f, settings()["sizes"])
         saved = db.saved()
         for d in result["items"]:
+            d["saved"] = d["id"] in saved
+        return result
+
+    @app.get("/api/analytics")
+    def insights() -> dict:
+        result = analytics.summary(db)
+        saved = db.saved()
+        for d in [*result["recent_drops"], *result["top_deals"]]:
             d["saved"] = d["id"] in saved
         return result
 
@@ -172,17 +265,18 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
 
     @app.post("/api/outfit")
     def outfit(body: OutfitRequest) -> dict:
-        plan = stylist.plan_for(body.brief, db, use_ai=body.use_ai)
+        plan = stylist.plan_for(body.brief, db, use_ai=body.use_ai,
+                                aesthetic=body.aesthetic or None, occasion=body.occasion or None)
         base = Filters(
             stores=body.stores, fabric=body.fabric, my_sizes=body.my_sizes,
             premium_only=body.premium_only, include_storewide=body.include_storewide,
         )
         result = stylist.build_outfit(db, plan, body.budget, settings()["sizes"], base)
         saved = db.saved()
-        for slot in result["slots"]:
-            for d in [slot["pick"], *slot["alternates"]]:
-                if d:
-                    d["saved"] = d["id"] in saved
+        for d in [p for s in result["slots"] for p in (s["pick"], *s["alternates"])] + \
+                [p for look in result["looks"] for p in look["picks"]]:
+            if d:
+                d["saved"] = d["id"] in saved
         return result
 
     @app.get("/api/extra")

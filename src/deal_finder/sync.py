@@ -11,8 +11,10 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from deal_finder.db import DB, parse_time
-from deal_finder.normalize import Product, from_shopify
+from deal_finder import style
+from deal_finder.db import DB, ON_VERCEL, parse_time
+from deal_finder.normalize import Product, from_listing, from_shopify
+from deal_finder.scrape import fetch_listing
 from deal_finder.stores import FEEDS, Store
 
 log = logging.getLogger(__name__)
@@ -24,6 +26,9 @@ HEADERS = {
 PAGE_SIZE = 250
 MAX_PAGES = 40
 STALE_AFTER = timedelta(hours=12)
+# Seconds of model labelling after each shop, when a key is set. Hosted, one
+# shop syncs per request under a 300 s limit, so leave the rest to the cron.
+LABEL_BUDGET = 30 if ON_VERCEL else 60
 
 
 def fetch_shopify(store: Store, session: requests.Session | None = None, pause: float = 1.0) -> list[dict]:
@@ -32,12 +37,18 @@ def fetch_shopify(store: Store, session: requests.Session | None = None, pause: 
     products: list[dict] = []
     for page in range(1, MAX_PAGES + 1):
         for attempt in range(4):
-            resp = http.get(
-                f"{store.base_url}/products.json",
-                params={"limit": PAGE_SIZE, "page": page},
-                headers=HEADERS,
-                timeout=30,
-            )
+            try:
+                resp = http.get(
+                    f"{store.base_url}/products.json",
+                    params={"limit": PAGE_SIZE, "page": page},
+                    headers=HEADERS,
+                    timeout=30,
+                )
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt == 3:
+                    raise
+                time.sleep(2 ** (attempt + 1))  # dropped connection: back off and retry
+                continue
             if resp.status_code not in (429, 500, 502, 503, 504) or attempt == 3:
                 break
             # Shops throttle quick page runs; wait as asked, or back off.
@@ -52,14 +63,20 @@ def fetch_shopify(store: Store, session: requests.Session | None = None, pause: 
     return products
 
 
+def fetch_catalogue(store: Store) -> list[dict]:
+    """A shop's raw products, read the way that shop allows."""
+    return fetch_listing(store) if store.kind == "listing" else fetch_shopify(store)
+
+
 def normalise(store: Store, raw: Iterable[dict]) -> list[Product]:
-    return [p for p in (from_shopify(store, r) for r in raw) if p]
+    convert = from_listing if store.kind == "listing" else from_shopify
+    return [p for p in (convert(store, r) for r in raw) if p]
 
 
 class Syncer:
     """Keeps the catalogue fresh. One sync runs at a time."""
 
-    def __init__(self, db: DB, fetch: Callable[[Store], list[dict]] = fetch_shopify) -> None:
+    def __init__(self, db: DB, fetch: Callable[[Store], list[dict]] = fetch_catalogue) -> None:
         self.db = db
         self.fetch = fetch
         self._lock = threading.Lock()
@@ -80,6 +97,10 @@ class Syncer:
             if not products:
                 raise RuntimeError("no menswear found in the catalogue")
             result = self.db.record(store.key, products)
+            try:
+                result["labelled"] = style.label_new(self.db, store.key, LABEL_BUDGET).get("labelled", 0)
+            except Exception as exc:  # labels are a bonus; the rules cover anything missed
+                log.warning("%s labelling failed: %s", store.name, exc)
             log.info("%s: %s", store.name, result)
             return result
         except Exception as exc:  # one broken shop must not stop the rest
@@ -99,11 +120,21 @@ class Syncer:
         finally:
             self._lock.release()
 
-    def sync_in_background(self, stores: list[Store] | None = None) -> bool:
-        if self._lock.locked():
-            return False
-        threading.Thread(target=self.sync, args=(stores,), daemon=True, name="sync").start()
-        return True
+    def sync_until(self, deadline: float, stores: list[Store] | None = None) -> dict:
+        """Refresh stale shops one at a time, oldest first, until the deadline.
+
+        Used by the hosted daily cron, where a request has a time limit.
+        Shops left over are picked up by the next run or by the page.
+        """
+        done = self.db.syncs()
+        queue = sorted(self.stale(stores or FEEDS), key=lambda s: (done.get(s.key) or {}).get("at") or "")
+        results, skipped = {}, []
+        for i, store in enumerate(queue):
+            if time.monotonic() > deadline:
+                skipped = [s.key for s in queue[i:]]
+                break
+            results[store.key] = self.sync_store(store)
+        return {"synced": results, "skipped": skipped}
 
     def keep_fresh(self, every: timedelta = timedelta(hours=1)) -> None:
         """Background loop: sync whatever has gone stale."""

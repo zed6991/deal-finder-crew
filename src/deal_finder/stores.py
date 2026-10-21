@@ -1,8 +1,9 @@
 """The shops Deal Finder reads.
 
 Shopify shops publish their whole catalogue at /products.json, with sale and
-full prices, for free. Shops that block that are reached through paid search
-(Serper) only when you ask.
+full prices, for free. THE ICONIC and David Jones have no such feed, so their
+men's sale listing pages are read instead (`scrape.py`). Shops we cannot read
+are reached through paid search (Serper) only when you ask.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ class Store:
     # "mens": menswear shop, drop anything marked women's.
     # "mixed": keep only items marked men's.
     gender: Literal["mens", "mixed"] = "mens"
-    kind: Literal["shopify", "search"] = "shopify"
+    kind: Literal["shopify", "listing", "search"] = "shopify"
 
     @property
     def base_url(self) -> str:
@@ -41,12 +42,13 @@ STORES: list[Store] = [
     Store("jacjack", "Jac+Jack", "www.jacandjack.com", "mid", "mixed"),
     Store("oxford", "Oxford", "www.oxfordshop.com.au", "mid", "mixed"),
     Store("gazman", "Gazman", "www.gazman.com.au", "mid"),
-    # Block automated catalogue reads; searched through Serper on request.
-    Store("theiconic", "THE ICONIC", "www.theiconic.com.au", "mid", "mixed", "search"),
-    Store("davidjones", "David Jones", "www.davidjones.com", "premium", "mixed", "search"),
+    # No /products.json: their men's sale listings are read instead.
+    Store("theiconic", "THE ICONIC", "www.theiconic.com.au", "mid", "mixed", "listing"),
+    Store("davidjones", "David Jones", "www.davidjones.com", "premium", "mixed", "listing"),
+    # Searched through Serper on request.
     Store("countryroad", "Country Road", "www.countryroad.com.au", "mid", "mixed", "search"),
 ]
 
 BY_KEY = {s.key: s for s in STORES}
-FEEDS = [s for s in STORES if s.kind == "shopify"]
+FEEDS = [s for s in STORES if s.kind != "search"]
 SEARCHED = [s for s in STORES if s.kind == "search"]

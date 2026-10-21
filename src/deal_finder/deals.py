@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from deal_finder.db import DB, parse_time
+from deal_finder.style import fits, style_of
 from deal_finder.stores import BY_KEY
 
 STOREWIDE_SHARE = 0.6
@@ -44,12 +45,15 @@ class Filters:
     categories: list[str] = field(default_factory=list)
     stores: list[str] = field(default_factory=list)
     min_discount: int = 0
+    min_price: float | None = None
     max_price: float | None = None
     fabric: str = "any"  # any | natural | stretch (natural + stretch)
     my_sizes: bool = False
     premium_only: bool = False
     include_storewide: bool = True
     in_stock: bool = True
+    style: str = ""  # a look from style.AESTHETICS, e.g. old_money
+    occasion: str = ""  # an occasion from style.OCCASIONS, e.g. office
     sort: str = "score"  # score | discount | price | price_desc | newest
     limit: int = 60
     offset: int = 0
@@ -140,36 +144,40 @@ def score_row(row: sqlite3.Row | dict, shares: dict[str, float], at: datetime | 
         "score": score,
         "label": "Great deal" if score >= 75 else "Good deal" if score >= 55 else "Fair",
         "badges": badges,
+        "style": style_of(r),
     }
 
 
 def search(db: DB, f: Filters, sizes: dict[str, str] | None = None) -> dict:
-    """Filter in SQL, score in Python, then sort and page."""
-    where, args = ["active = 1"], []
-    if f.in_stock:
-        where.append("in_stock = 1")
-    if f.categories:
-        where.append(f"category IN ({','.join('?' * len(f.categories))})")
-        args += f.categories
-    stores = [s for s in f.stores if s in BY_KEY]
+    """Filter and score the cached catalogue, then sort and page."""
+    stores = {s for s in f.stores if s in BY_KEY}
     if f.premium_only:
-        premium = [k for k, s in BY_KEY.items() if s.tier == "premium"]
-        stores = [s for s in stores if s in premium] if stores else premium
-    if stores:
-        where.append(f"store IN ({','.join('?' * len(stores))})")
-        args += stores
-    if f.max_price:
-        where.append("price <= ?")
-        args.append(f.max_price)
-    if f.fabric == "natural":
-        where.append("fabric = 'natural'")
-    elif f.fabric == "stretch":
-        where.append("fabric IN ('natural', 'stretch')")
-    for word in f.q.split()[:8]:
-        where.append("(title LIKE ? OR brand LIKE ? OR colour LIKE ? OR category LIKE ? OR composition LIKE ?)")
-        args += [f"%{word}%"] * 5
+        premium = {k for k, s in BY_KEY.items() if s.tier == "premium"}
+        stores = stores & premium if stores else premium
+    cats = set(f.categories)
+    fabrics = {"natural": {"natural"}, "stretch": {"natural", "stretch"}}.get(f.fabric)
+    words = [w.lower() for w in f.q.split()[:8]]
 
-    rows = db.query(f"SELECT * FROM products WHERE {' AND '.join(where)}", args)
+    def keep(r: dict) -> bool:
+        if f.in_stock and not r["in_stock"]:
+            return False
+        if cats and r["category"] not in cats:
+            return False
+        if stores and r["store"] not in stores:
+            return False
+        if f.min_price and r["price"] < f.min_price:
+            return False
+        if f.max_price and r["price"] > f.max_price:
+            return False
+        if fabrics and r["fabric"] not in fabrics:
+            return False
+        if words:
+            text = " ".join(str(r[k] or "") for k in ("title", "brand", "colour", "category", "composition")).lower()
+            if not all(w in text for w in words):
+                return False
+        return True
+
+    rows = [r for r in db.catalogue() if keep(r)]
     shares = sale_shares(db)
     at = datetime.now(timezone.utc)
     items = []
@@ -183,6 +191,8 @@ def search(db: DB, f: Filters, sizes: dict[str, str] | None = None) -> dict:
             wanted = sizes.get(GROUP_OF.get(d["category"], ""), "")
             if wanted and not size_matches(wanted, d["sizes"]):
                 continue
+        if not fits(d["style"], f.style, f.occasion):
+            continue
         items.append(d)
 
     keys = {

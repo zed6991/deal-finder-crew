@@ -1,148 +1,115 @@
 // Deal Finder front end. No framework: a hash router, a tiny element
 // builder, and views rendered from the JSON API.
 
-const $ = (sel, root = document) => root.querySelector(sel);
+import { insightsView } from "./insights.js";
+import {
+  $, el, icon, safeUrl, money, ago, sized, api, local, toast,
+  segmented, toggle, emptyState, openSheet, closeSheet,
+} from "./ui.js";
+
 const view = $("#view");
-const CUR = "AUD";
-
-// ── Helpers ─────────────────────────────────────────────────
-
-function el(tag, attrs = {}, ...kids) {
-  const node = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (v == null || v === false) continue;
-    if (k === "class") node.className = v;
-    else if (k === "text") node.textContent = v;
-    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
-    else if (k === "style") node.style.cssText = v;
-    else node.setAttribute(k, v === true ? "" : v);
-  }
-  for (const kid of kids.flat(Infinity)) {
-    if (kid == null || kid === false) continue;
-    node.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
-  }
-  return node;
-}
-
-function icon(name, cls = "") {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("class", `i ${cls}`);
-  svg.setAttribute("aria-hidden", "true");
-  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
-  use.setAttribute("href", `#i-${name}`);
-  svg.append(use);
-  return svg;
-}
-
-const safeUrl = (u) => (typeof u === "string" && /^https?:\/\//i.test(u) ? u : null);
-
-function money(value) {
-  if (value == null) return "";
-  return new Intl.NumberFormat("en-AU", {
-    style: "currency", currency: CUR, minimumFractionDigits: value % 1 ? 2 : 0, maximumFractionDigits: 2,
-  }).format(value);
-}
-
-function ago(iso) {
-  if (!iso) return "never";
-  const mins = Math.round((Date.now() - new Date(iso)) / 6e4);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} min ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs} hr ago`;
-  return new Date(iso).toLocaleDateString("en-AU", { day: "numeric", month: "short" });
-}
-
-// Shopify's image CDN resizes on request; ask for card-sized images.
-function sized(src, width) {
-  const url = safeUrl(src);
-  if (!url) return null;
-  if (/cdn\.shopify\.com|\/cdn\/shop\//.test(url)) return `${url}${url.includes("?") ? "&" : "?"}width=${width}`;
-  return url;
-}
-
-async function api(path, opts = {}) {
-  const res = await fetch(`/api${path}`, { headers: { "Content-Type": "application/json" }, ...opts });
-  if (!res.ok) {
-    let msg = res.statusText;
-    try {
-      const body = await res.json();
-      msg = typeof body.detail === "string" ? body.detail
-        : (body.detail || []).map((d) => `${d.loc?.at(-1)}: ${d.msg}`).join("; ") || msg;
-    } catch { /* keep statusText */ }
-    throw new Error(msg);
-  }
-  return res.status === 204 ? null : res.json();
-}
-
-const local = {
-  get(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } },
-  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode */ } },
-};
-
-let toastTimer;
-function toast(text) {
-  const t = $("#toast");
-  t.textContent = text;
-  t.classList.add("show");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
-}
-
-function segmented(name, options, value, onchange, cls = "") {
-  const node = el("div", { class: `segmented ${cls}`, role: "radiogroup" },
-    options.flatMap(([v, label]) => {
-      const id = `${name}-${v}`;
-      return [
-        el("input", { type: "radio", name, id, value: v, checked: String(v) === String(value) }),
-        el("label", { for: id, text: label }),
-      ];
-    }));
-  if (onchange) node.addEventListener("change", (e) => onchange(e.target.value));
-  return node;
-}
-
-function toggle(checked, onchange, label) {
-  const input = el("input", { type: "checkbox", role: "switch", "aria-label": label, checked });
-  input.addEventListener("change", () => onchange(input.checked));
-  return el("label", { class: "switch" }, input, el("span"));
-}
 
 // ── App state ───────────────────────────────────────────────
 
-let status = { stores: [], categories: [], settings: { sizes: {} }, size_groups: {} };
+let status = { stores: [], categories: [], settings: { sizes: {} }, size_groups: {}, aesthetics: {}, occasions: {} };
 let poll = null;
+
+// Shops refresh one request at a time, driven from the page, so each request
+// stays well inside a hosted function's time limit.
+const updater = { running: false, done: 0, total: 0, current: null };
+const isSyncing = () => status.syncing || updater.running;
+
+async function updateShops(keys, { rerender = false } = {}) {
+  if (updater.running || !keys.length) return null;
+  Object.assign(updater, { running: true, done: 0, total: keys.length });
+  let failed = 0;
+  for (const key of keys) {
+    updater.current = key;
+    drawRefreshControls();
+    if (location.hash.startsWith("#/stores")) storesView();
+    try { await api(`/sync/${encodeURIComponent(key)}`, { method: "POST" }); } catch { failed++; /* shown in Stores */ }
+    updater.done++;
+  }
+  Object.assign(updater, { running: false, current: null });
+  const wasEmpty = status.empty;
+  await refreshStatus();
+  if (rerender || wasEmpty || location.hash.startsWith("#/stores")) route();
+  return { failed, total: keys.length };
+}
+
+async function refreshAll() {
+  const feeds = status.stores.filter((s) => s.kind !== "search").map((s) => s.key);
+  toast("Checking every shop for new prices…");
+  const r = await updateShops(feeds, { rerender: true });
+  if (!r) return;
+  toast(r.failed ? `${r.total - r.failed} of ${r.total} shops updated. See Stores for details.` : "Deals are up to date");
+}
+
+const lastUpdated = () => status.stores.map((s) => s.synced_at).filter(Boolean).sort().at(-1);
+
+function refreshLabel() {
+  if (updater.running) {
+    const name = status.stores.find((s) => s.key === updater.current)?.name || "shops";
+    return `Checking ${name} · ${updater.done + 1} of ${updater.total}`;
+  }
+  if (status.syncing) return "Checking shops…";
+  return `Updated ${ago(lastUpdated())}`;
+}
+
+// Every mounted refresh control redraws together as shops update.
+const refreshControls = new Set();
+
+function refreshControl({ compact = false } = {}) {
+  const btn = el("button", { type: "button", class: "refresh-btn", onclick: refreshAll });
+  const note = el("span", { class: "refresh-note", "aria-live": "polite" });
+  const node = el("div", { class: `refresh${compact ? " compact" : ""}` }, btn, note);
+  node.draw = () => {
+    const busy = isSyncing();
+    btn.disabled = busy;
+    btn.classList.toggle("busy", busy);
+    btn.replaceChildren(icon("refresh"), el("span", { text: busy ? "Refreshing" : "Refresh Deals" }));
+    note.textContent = refreshLabel();
+  };
+  node.draw();
+  refreshControls.add(node);
+  return node;
+}
+
+function drawRefreshControls() {
+  for (const node of refreshControls) {
+    if (node.isConnected) node.draw(); else refreshControls.delete(node);
+  }
+}
+
+function renderFoot() {
+  const total = status.stores.reduce((a, s) => a + s.products, 0);
+  const shops = status.stores.filter((s) => s.products).length;
+  $("#side-foot").textContent = `${total.toLocaleString()} items tracked across ${shops} shops`;
+  drawRefreshControls();
+}
 
 async function refreshStatus() {
   status = await api("/status");
   const n = await api("/saved").then((s) => s.length).catch(() => 0);
   $("#saved-count").textContent = n || "";
-  const cats = $("#side-cats");
-  cats.replaceChildren(...status.categories.map((c) =>
-    el("a", { class: "side-hunt", href: `#/deals?category=${encodeURIComponent(c)}`, "data-cat": c, text: c })));
-  const synced = status.stores.filter((s) => s.synced_at).map((s) => s.synced_at).sort().at(-1);
-  const total = status.stores.reduce((a, s) => a + s.products, 0);
-  $("#side-foot").textContent = status.syncing ? "Updating shops…"
-    : `${total.toLocaleString()} items across ${status.stores.filter((s) => s.products).length} shops · updated ${ago(synced)}`;
+  renderFoot();
   markActive();
 }
 
 function markActive() {
-  const [path, qs] = location.hash.slice(2).split("?");
-  const route = path || "deals";
-  const cat = new URLSearchParams(qs || "").get("category");
-  document.querySelectorAll("[data-nav]").forEach((a) =>
-    a.classList.toggle("active", a.dataset.nav === route && !(route === "deals" && cat)));
-  document.querySelectorAll("[data-cat]").forEach((a) => a.classList.toggle("active", route === "deals" && a.dataset.cat === cat));
+  const path = location.hash.slice(2).split("?")[0] || "deals";
+  const current = path === "analytics" ? "insights" : path;
+  document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === current));
 }
 
 // ── Page chrome ─────────────────────────────────────────────
 
-function page(title, { narrow = false, actions = [] } = {}, ...content) {
+function page(title, { narrow = false, actions = [], aside = null } = {}, ...content) {
   const nav = el("header", { class: "navbar" },
     el("div", { class: "nav-title", "aria-hidden": "true", text: title }), ...actions);
+  const heading = el("h1", { class: "large-title", text: title });
   return el("div", { class: `page${narrow ? " narrow" : ""}` },
-    nav, el("h1", { class: "large-title", text: title }), ...content);
+    nav, aside ? el("div", { class: "title-row" }, heading, aside) : heading, ...content);
 }
 
 function show(node, keepScroll = false) {
@@ -157,8 +124,14 @@ function show(node, keepScroll = false) {
 function onScroll() { document.body.classList.toggle("scrolled", window.scrollY > 36); }
 window.addEventListener("scroll", onScroll, { passive: true });
 
-function emptyState(iconName, title, text, ...actions) {
-  return el("div", { class: "empty" }, icon(iconName), el("h2", { text: title }), el("p", { text }), ...actions);
+
+function storageNotice() {
+  if (status.persistent !== false) return null;
+  return el("div", { class: "notice" },
+    el("div", { class: "badge-icon" }, icon("exclaim")),
+    el("div", {},
+      el("h3", { text: "Add a database to keep your data" }),
+      el("p", { style: "margin:0", text: "Without one, prices, price history and saved items are lost whenever Vercel restarts the app. In your Vercel project, open Storage and add Neon Postgres (free), then redeploy." })));
 }
 
 function syncingNotice() {
@@ -231,17 +204,64 @@ function dealCard(d, { onopen, selected = false, extra = null } = {}) {
   el("div", { class: "card-body" },
     el("div", { class: "brand-line" }, el("b", { text: d.brand }), d.brand !== d.store_name && el("span", { text: d.store_name })),
     el("div", { class: "card-name", text: d.title }),
-    d.colour && !d.title.toLowerCase().includes(d.colour.toLowerCase().split(/[ /]/)[0]) && el("div", { class: "retailer", text: d.colour }),
     priceRow(d),
-    el("div", { class: "card-meta" },
-      el("span", { class: `pill ${labelClass(d.label)}`, text: d.label }),
-      d.fabric === "natural" && el("span", { class: "retailer", text: "Natural" })),
-    d.badges?.length > 0 && el("div", { class: "badges" }, badges(d)),
+    signal(d),
     extra));
   const open = () => (onopen ? onopen(d) : openProduct(d.id));
   card.addEventListener("click", open);
   card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
   return card;
+}
+
+// One reason to look, not five: the strongest signal a card has.
+function signal(d) {
+  const has = (b) => (d.badges || []).includes(b);
+  const [text, cls] = has("Lowest price seen") ? ["Lowest price seen", "low"]
+    : has("Just dropped") ? ["Just dropped", "drop"]
+      : d.label === "Great deal" ? ["Great deal", "great"] : [];
+  return text ? el("div", { class: `signal ${cls}`, text }) : null;
+}
+
+// The single best deal, given the room to sell itself.
+function featureCard(d) {
+  const url = safeUrl(d.url);
+  const was = d.was_price || d.prev_price;
+  const details = el("button", { class: "btn primary", onclick: () => openProduct(d.id) }, "See Details");
+  const well = el("div", { class: "well" }, imageWell(d, 900), favButton(d));
+  well.addEventListener("click", () => openProduct(d.id));
+  return el("article", { class: "feature", "aria-label": "Today’s best deal" },
+    well,
+    el("div", { class: "feature-body" },
+      el("div", { class: "eyebrow", text: "Today’s best deal" }),
+      el("div", { class: "brand-line" }, el("b", { text: d.brand }), d.brand !== d.store_name && el("span", { text: `at ${d.store_name}` })),
+      el("h2", { text: d.title }),
+      el("div", { class: "feature-price" },
+        el("span", { class: "price sale", text: money(d.price) }),
+        was && el("span", { class: "was", text: money(was) })),
+      d.saving > 0 && el("p", { class: "feature-save", text: `You save ${money(d.saving)}. That’s ${offPct(d)}% off.` }),
+      el("div", { class: "feature-actions" }, details,
+        url && el("a", { class: "btn", href: url, target: "_blank", rel: "noopener noreferrer" }, `Shop at ${d.store_name}`, icon("arrow-up-right")))));
+}
+
+// Pick one, or none: tapping the chosen chip again clears it.
+function choiceChips(options, value, onpick) {
+  let current = value;
+  const chips = Object.entries(options).map(([key, label]) => {
+    const chip = el("button", { type: "button", class: "chip", "aria-pressed": String(key === current), text: label });
+    chip.addEventListener("click", () => {
+      current = current === key ? "" : key;
+      chips.forEach((c, i) => c.setAttribute("aria-pressed", String(Object.keys(options)[i] === current)));
+      onpick(current);
+    });
+    return chip;
+  });
+  return el("div", { class: "chips" }, chips);
+}
+
+function styleText(d) {
+  const st = d.style || {};
+  return [(st.aesthetics || []).map((a) => status.aesthetics[a]).filter(Boolean).join(", "),
+    (st.occasions || []).map((o) => status.occasions[o]).filter(Boolean).join(", ")];
 }
 
 function skeletonGrid(n = 8) {
@@ -251,8 +271,8 @@ function skeletonGrid(n = 8) {
 // ── Deals ───────────────────────────────────────────────────
 
 const DEFAULT_FILTERS = {
-  q: "", category: [], store: [], min_discount: 0, max_price: "", fabric: "any",
-  my_sizes: false, premium_only: false, include_storewide: true, sort: "score",
+  q: "", category: [], store: [], min_discount: 0, min_price: "", max_price: "", fabric: "any",
+  my_sizes: false, premium_only: false, include_storewide: true, style: "", occasion: "", sort: "score",
 };
 let filters = { ...DEFAULT_FILTERS, ...local.get("df.filters", {}) };
 
@@ -260,11 +280,13 @@ function filterCount() {
   let n = 0;
   if (filters.store.length) n++;
   if (Number(filters.min_discount)) n++;
-  if (filters.max_price) n++;
+  if (Number(filters.min_price) > 0 || Number(filters.max_price) > 0) n++;
   if (filters.fabric !== "any") n++;
   if (filters.my_sizes) n++;
   if (filters.premium_only) n++;
   if (!filters.include_storewide) n++;
+  if (filters.style) n++;
+  if (filters.occasion) n++;
   return n;
 }
 
@@ -273,7 +295,9 @@ function queryString(f, offset = 0) {
   if (f.q) p.set("q", f.q);
   f.category.forEach((c) => p.append("category", c));
   f.store.forEach((s) => p.append("store", s));
-  for (const k of ["min_discount", "max_price", "fabric", "sort"]) if (f[k] !== "" && f[k] != null) p.set(k, f[k]);
+  for (const k of ["min_discount", "fabric", "style", "occasion", "sort"]) if (f[k] !== "" && f[k] != null) p.set(k, f[k]);
+  // An empty or zero price means no limit.
+  for (const k of ["min_price", "max_price"]) if (Number(f[k]) > 0) p.set(k, Number(f[k]));
   for (const k of ["my_sizes", "premium_only", "include_storewide"]) p.set(k, f[k]);
   p.set("limit", 48);
   p.set("offset", offset);
@@ -285,11 +309,14 @@ async function dealsView(params) {
   filters.category = cat ? [cat] : [];
   local.set("df.filters", { ...filters, category: [] });
 
-  const title = cat || "Deals";
+  // A shop link (from Insights) narrows this visit only; saved filters stay as they are.
+  const shop = status.stores.find((s) => s.key === params.get("store"));
+  const title = shop?.name || cat || "Deals";
   const grid = el("div", { class: "grid" });
   const meta = el("div", { class: "result-meta" });
   const more = el("div", { class: "load-more" });
   const extraBox = el("div");
+  const hero = el("div");
 
   const search = el("input", { type: "search", placeholder: "Search brands, styles, colours", "aria-label": "Search deals", value: filters.q, enterkeyhint: "search" });
   let debounce;
@@ -311,15 +338,28 @@ async function dealsView(params) {
       .map(([v, t]) => el("option", { value: v, text: t, selected: v === filters.sort })));
   sortSel.addEventListener("change", () => { filters.sort = sortSel.value; local.set("df.filters", { ...filters, category: [] }); load(); });
 
+  const subtitle = el("p", { class: "subtitle" });
+  function subtitleText() {
+    const n = status.stores.filter((s) => s.kind !== "search" && s.products).length;
+    const styled = [status.aesthetics[filters.style], status.occasions[filters.occasion] && `for ${status.occasions[filters.occasion].toLowerCase()}`].filter(Boolean).join(" ");
+    if (shop) return `Everything marked down at ${shop.name}, best value first.`;
+    if (cat) return `Marked-down ${cat.toLowerCase()} from ${n} shops, best value first.`;
+    return styled ? `${styled} markdowns from ${n} shops, ranked by real value.` : `The best markdowns from ${n} shops, ranked by real value.`;
+  }
+
   let offset = 0;
   async function load(append = false) {
     markFilters();
+    subtitle.textContent = subtitleText();
     if (!append) { offset = 0; grid.replaceChildren(...skeletonGrid().children); more.replaceChildren(); }
     let r;
     try {
-      r = await api(`/deals?${queryString(filters, offset)}`);
+      r = await api(`/deals?${queryString(shop ? { ...filters, store: [shop.key] } : filters, offset)}`);
     } catch (err) { grid.replaceChildren(el("div", { class: "error-card", text: err.message })); return; }
-    const cards = r.items.map((d) => dealCard(d));
+    // The unfiltered front page leads with its single best deal.
+    const lead = !append && !cat && !shop && !filters.q && !filterCount() && filters.sort === "score" && r.items.length > 4;
+    hero.replaceChildren(lead ? featureCard(r.items[0]) : "");
+    const cards = (lead ? r.items.slice(1) : r.items).map((d) => dealCard(d));
     if (append) grid.append(...cards); else grid.replaceChildren(...cards);
     offset += r.items.length;
     meta.replaceChildren(el("span", { text: `${r.total.toLocaleString()} ${r.total === 1 ? "deal" : "deals"}` }), el("label", { class: "sort" }, "Sort", sortSel));
@@ -340,20 +380,24 @@ async function dealsView(params) {
     extraBox.append(el("div", { class: "group", style: "margin-top:24px" },
       el("button", { class: "row", style: "width:100%;border:0;background:none;cursor:pointer;text-align:left", onclick: () => runExtra(q, extraBox) },
         el("div", { class: "badge-icon", style: "width:30px;height:30px;border-radius:7px;background:var(--indigo);color:#fff;display:grid;place-items:center" }, icon("search")),
-        el("div", { class: "grow" }, el("span", { text: `Search THE ICONIC, David Jones and Country Road for “${q}”` }),
+        el("div", { class: "grow" }, el("span", { text: `Search Country Road for “${q}”` }),
           el("span", { class: "sub", text: `Paid search · ${status.extra_used_today} of ${status.extra_cap} used today · cached for a day` })),
         icon("chevron", "chev"))));
   }
 
-  show(page(title, {},
-    status.syncing && status.empty ? syncingNotice() : null,
+  subtitle.textContent = subtitleText();
+  show(page(title, { aside: refreshControl() },
+    subtitle,
+    storageNotice(),
+    isSyncing() && status.empty ? syncingNotice() : null,
+    hero,
     el("div", { class: "search-row" }, el("label", { class: "searchbar" }, icon("search"), search), filterBtn),
     chips, meta, grid, more, extraBox));
   load();
-  if (status.syncing) {
+  if (isSyncing()) {
     poll = setInterval(async () => {
       await refreshStatus();
-      if (!status.syncing) { clearInterval(poll); load(); }
+      if (!isSyncing()) { clearInterval(poll); load(); }
     }, 5000);
   }
 }
@@ -379,7 +423,7 @@ async function runExtra(q, box) {
 
 function openFilters(onapply) {
   const draft = structuredClone(filters);
-  const feeds = status.stores.filter((s) => s.kind === "shopify");
+  const feeds = status.stores.filter((s) => s.kind !== "search");
   const storeChips = el("div", { class: "chips" }, feeds.map((s) => {
     const chip = el("button", { type: "button", class: "chip", "aria-pressed": String(draft.store.includes(s.key)), text: s.name });
     chip.addEventListener("click", () => {
@@ -388,11 +432,22 @@ function openFilters(onapply) {
     });
     return chip;
   }));
-  const maxPrice = el("input", { type: "number", inputmode: "numeric", min: 0, step: 10, placeholder: "Any", value: draft.max_price, "aria-label": "Maximum price" });
-  maxPrice.addEventListener("input", () => { draft.max_price = maxPrice.value; });
+  const priceInput = (key, label) => {
+    const input = el("input", { type: "number", inputmode: "numeric", min: 0, step: 10, placeholder: "Any", value: Number(draft[key]) > 0 ? draft[key] : "", "aria-label": label });
+    input.addEventListener("input", () => { draft[key] = input.value; });
+    return input;
+  };
+  const minPrice = priceInput("min_price", "Minimum price");
+  const maxPrice = priceInput("max_price", "Maximum price");
   const sizesSet = Object.values(status.settings.sizes).some(Boolean);
 
   openSheet("Filters", [
+    el("div", { class: "group-label", text: "Style" }),
+    el("div", { class: "group" },
+      el("div", { class: "row stack" }, el("span", { class: "row-label", text: "Look" }),
+        choiceChips(status.aesthetics, draft.style, (v) => { draft.style = v; })),
+      el("div", { class: "row stack" }, el("span", { class: "row-label", text: "Occasion" }),
+        choiceChips(status.occasions, draft.occasion, (v) => { draft.occasion = v; }))),
     el("div", { class: "group-label", text: "Discount" }),
     el("div", { class: "group" },
       el("div", { class: "row stack" }, segmented("f-disc", [[0, "Any"], [20, "20%+"], [30, "30%+"], [50, "50%+"]], draft.min_discount, (v) => { draft.min_discount = Number(v); }, "wide")),
@@ -400,6 +455,7 @@ function openFilters(onapply) {
         toggle(draft.include_storewide, (v) => { draft.include_storewide = v; }, "Include store-wide sales"))),
     el("div", { class: "group-label", text: "Price and fit" }),
     el("div", { class: "group" },
+      el("div", { class: "row" }, el("span", { text: "From" }), el("span", { class: "money-field" }, "$", minPrice)),
       el("div", { class: "row" }, el("span", { text: "Up to" }), el("span", { class: "money-field" }, "$", maxPrice)),
       el("div", { class: "row" }, el("div", { class: "grow" }, "In my sizes", el("span", { class: "sub", text: sizesSet ? "Uses the sizes saved in Stores" : "Set your sizes in Stores first" })),
         toggle(draft.my_sizes, (v) => { draft.my_sizes = v; }, "In my sizes"))),
@@ -472,8 +528,11 @@ async function openProduct(id) {
 
   const mine = mySizesFor(d.category);
   const fabricText = { natural: "Natural fibres", stretch: "Natural with stretch", synthetic: "Contains synthetics", unknown: "Not listed" }[d.fabric];
+  const [looks, occasions] = styleText(d);
   const facts = [
     ["Shop", d.store_name],
+    ["Style", looks],
+    ["Good for", occasions],
     ["Colour", d.colour],
     ["Fabric", [d.composition, fabricText].filter(Boolean).join(" · ")],
     d.saved_price != null && ["Price when saved", money(d.saved_price)],
@@ -518,47 +577,14 @@ async function openProduct(id) {
   ]);
 }
 
-// ── Sheet ───────────────────────────────────────────────────
-
-let lastFocus = null;
-
-function openSheet(title, content) {
-  const sheet = $("#sheet");
-  const backdrop = $("#sheet-backdrop");
-  lastFocus = document.activeElement;
-  const close = el("button", { class: "close-btn", "aria-label": "Close", onclick: closeSheet }, icon("xmark"));
-  sheet.replaceChildren(
-    el("div", { class: "grabber" }),
-    title ? el("div", { class: "sheet-bar" }, el("h2", { id: "sheet-title", text: title }), close) : el("div", { class: "sheet-head" }, close),
-    ...content.filter(Boolean));
-  sheet.hidden = false;
-  backdrop.hidden = false;
-  sheet.classList.remove("closing");
-  backdrop.classList.remove("closing");
-  document.body.style.overflow = "hidden";
-  sheet.scrollTop = 0;
-  close.focus();
-}
-
-function closeSheet() {
-  const sheet = $("#sheet");
-  const backdrop = $("#sheet-backdrop");
-  if (sheet.hidden) return;
-  sheet.classList.add("closing");
-  backdrop.classList.add("closing");
-  document.body.style.overflow = "";
-  setTimeout(() => { sheet.hidden = true; backdrop.hidden = true; lastFocus?.focus?.(); }, 250);
-}
-$("#sheet-backdrop").addEventListener("click", closeSheet);
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
 
 // ── Outfit ──────────────────────────────────────────────────
 
-const IDEAS = ["Smart casual dinner", "Office, navy and grey", "Summer wedding", "Weekend, relaxed", "Winter layers", "Navy blazer, white shirt, brown loafers"];
+const IDEAS = ["Old money date night", "Office, navy and grey", "Summer wedding", "Weekend, relaxed", "Winter layers", "Navy blazer, white shirt, brown loafers"];
 
 function outfitView() {
   const last = local.get("df.outfit", {});
-  const form = { brief: "", budget: 600, use_ai: false, my_sizes: true, premium_only: false, fabric: "any", include_storewide: true, ...last };
+  const form = { brief: "", aesthetic: "", occasion: "", budget: 600, use_ai: false, my_sizes: true, premium_only: false, fabric: "any", include_storewide: true, ...last };
 
   const brief = el("textarea", { rows: 3, maxlength: 400, "aria-label": "Describe what you need", placeholder: "What’s it for? e.g. smart casual dinner, navy and stone. Or list pieces: navy blazer, white shirt, brown loafers" });
   brief.value = form.brief;
@@ -576,6 +602,13 @@ function outfitView() {
 
   const formEl = el("form", {},
     el("div", { class: "composer" }, brief, ideas),
+    el("div", { class: "group-label", text: "Look and occasion" }),
+    el("div", { class: "group" },
+      el("div", { class: "row stack" }, el("span", { class: "row-label", text: "Look" }),
+        choiceChips(status.aesthetics, form.aesthetic, (v) => { form.aesthetic = v; })),
+      el("div", { class: "row stack" }, el("span", { class: "row-label", text: "Occasion" }),
+        choiceChips(status.occasions, form.occasion, (v) => { form.occasion = v; }))),
+    el("p", { class: "group-footer", text: "Optional. Picks here beat what the brief suggests. Pick one and you can leave the brief empty." }),
     el("div", { class: "group-label", text: "Budget" }),
     el("div", { class: "group" },
       el("div", { class: "row" }, el("span", { text: "Total to spend" }), el("span", { class: "money-field" }, "$", budget)),
@@ -585,7 +618,7 @@ function outfitView() {
       el("div", { class: "row" }, el("div", { class: "grow" }, "In my sizes", el("span", { class: "sub", text: "Set sizes in Stores" })), toggle(form.my_sizes, (v) => { form.my_sizes = v; }, "In my sizes")),
       el("div", { class: "row" }, el("span", { class: "grow", text: "Premium shops only" }), toggle(form.premium_only, (v) => { form.premium_only = v; }, "Premium shops only")),
       el("div", { class: "row" }, el("div", { class: "grow" }, "Read my brief with AI",
-        el("span", { class: "sub", text: status.ai ? "One small Claude call, under a cent; repeats are free" : "Add ANTHROPIC_API_KEY to .env to turn on" })),
+        el("span", { class: "sub", text: status.ai ? "One small Claude call, under a cent; repeats are free" : "Add ANTHROPIC_API_KEY or OPENROUTER_API_KEY to .env to turn on" })),
       toggle(form.use_ai && status.ai, (v) => { form.use_ai = v; }, "Read my brief with AI")),
       el("div", { class: "row stack" }, el("span", { class: "row-label", text: "Fabric" }),
         segmented("o-fab", [["any", "Any"], ["stretch", "Natural + stretch"], ["natural", "Natural only"]], form.fabric, (v) => { form.fabric = v; }))),
@@ -596,7 +629,7 @@ function outfitView() {
   formEl.addEventListener("submit", async (e) => {
     e.preventDefault();
     const body = { ...form, brief: brief.value.trim(), budget: Number(budget.value), use_ai: form.use_ai && status.ai };
-    if (body.brief.length < 2) { brief.focus(); toast("Describe what you need first"); return; }
+    if (body.brief.length < 2 && !body.aesthetic && !body.occasion) { brief.focus(); toast("Describe what you need, or pick a look"); return; }
     local.set("df.outfit", body);
     go.disabled = true;
     results.replaceChildren(el("div", { class: "result-meta" }, el("span", { class: "spinner" }), el("span", { text: body.use_ai ? "Reading your brief…" : "Picking pieces…" })));
@@ -610,33 +643,35 @@ function outfitView() {
   });
 
   show(page("Outfit", { narrow: true },
-    el("p", { class: "subtitle", text: "Describe a look and a budget. You get the best-value piece for each part of it, with alternatives." }),
-    status.empty ? syncingNotice() : null, formEl, results));
+    el("p", { class: "subtitle", text: "Describe a look, or pick one, and set a budget. You get up to three outfits that go together, mixing shops, with alternatives for every piece." }),
+    storageNotice(), status.empty ? syncingNotice() : null, formEl, results));
 }
 
 function renderOutfit(r, box) {
-  const picks = r.slots.map((s) => s.pick);
+  const looks = r.looks?.length ? r.looks : [{ picks: r.slots.map((s) => s.pick) }];
+  let picks = [...looks[0].picks];
   const summary = el("div", { class: "summary" });
   const drawSummary = () => {
     const chosen = picks.filter(Boolean);
     const total = chosen.reduce((a, d) => a + d.price, 0);
     const saved = chosen.reduce((a, d) => a + d.saving, 0);
+    const shops = new Set(chosen.map((d) => d.store)).size;
     summary.replaceChildren(
       el("div", {},
         el("div", { class: "k", text: r.plan.look }),
         el("div", { class: "v" }, money(total), el("small", { text: ` of ${money(r.budget)}` })),
         el("div", { class: "meter" }, el("i", { style: `width:${Math.min(100, (total / r.budget) * 100)}%;${total > r.budget ? "background:var(--red)" : ""}` })),
-        el("div", { class: "meter-caption", text: total > r.budget ? `${money(total - r.budget)} over budget` : `${money(r.budget - total)} left · ${chosen.length} pieces` })),
+        el("div", { class: "meter-caption", text: total > r.budget ? `${money(total - r.budget)} over budget` : `${money(r.budget - total)} left · ${chosen.length} pieces from ${shops} ${shops === 1 ? "shop" : "shops"}` })),
       el("div", {}, el("div", { class: "k", text: "You save" }), el("div", { class: `v${saved ? " green" : ""}`, text: money(saved) })),
       el("div", {}, el("div", { class: "k", text: "Read by" }), el("div", { class: "v", style: "font-size:22px", text: { ai: "AI", preset: "Preset", keywords: "Your list" }[r.plan.source] })));
   };
-  drawSummary();
 
+  const draws = [];
   const slots = r.slots.map((s, i) => {
     const body = el("div", { class: "slot-body" });
     const draw = () => {
       const pick = picks[i];
-      const options = [s.pick, ...s.alternates].filter(Boolean).filter((d, j, a) => a.findIndex((x) => x.id === d.id) === j);
+      const options = [pick, s.pick, ...s.alternates].filter(Boolean).filter((d, j, a) => a.findIndex((x) => x.id === d.id) === j);
       body.replaceChildren(
         pick ? dealCard(pick) : el("div", { class: "error-card", text: "Nothing fits the budget and sizes. Alternatives are on the right." }),
         options.length > 1 ? el("div", {},
@@ -646,19 +681,24 @@ function renderOutfit(r, box) {
             onopen: () => { picks[i] = d; draw(); drawSummary(); },
           })))) : null);
     };
-    draw();
+    draws.push(draw);
     const words = [...s.slot.colours, ...s.slot.keywords].slice(0, 4).join(", ");
     return el("section", { class: "slot" },
       el("div", { class: "slot-head" }, el("h3", { text: s.slot.category }), el("span", { text: words })), body);
   });
+  const drawAll = () => { draws.forEach((d) => d()); drawSummary(); };
+  drawAll();
+
+  const switcher = looks.length > 1 ? el("div", { class: "row stack", style: "padding:0;margin:0 0 16px" },
+    segmented("o-look", looks.map((l, i) => [i, `Look ${i + 1} · ${money(l.total)}`]), 0, (v) => { picks = [...looks[Number(v)].picks]; drawAll(); }, "wide")) : null;
 
   const extraBox = el("div");
   box.replaceChildren(
-    el("div", { class: "section-title", text: "Your outfit" }),
-    summary, ...slots,
+    el("div", { class: "section-title", text: looks.length > 1 ? `${looks.length} outfits` : "Your outfit" }),
+    switcher, summary, ...slots,
     status.extra && el("div", { class: "group", style: "margin-top:28px" },
       el("button", { class: "row", style: "width:100%;border:0;background:none;cursor:pointer;text-align:left", onclick: () => runExtra(`${r.plan.look} ${r.slots.map((s) => s.slot.category).slice(0, 2).join(" ")}`, extraBox) },
-        el("span", { class: "grow", text: "Also check THE ICONIC, David Jones and Country Road" }), icon("chevron", "chev"))),
+        el("span", { class: "grow", text: "Also check Country Road" }), icon("chevron", "chev"))),
     extraBox);
 }
 
@@ -698,14 +738,10 @@ function storesView() {
   };
   inputs.forEach(([, i]) => i.addEventListener("change", saveSizes));
 
-  const feeds = status.stores.filter((s) => s.kind === "shopify");
+  const feeds = status.stores.filter((s) => s.kind !== "search");
   const searched = status.stores.filter((s) => s.kind === "search");
-  const syncBtn = el("button", { class: "text-btn", disabled: status.syncing, onclick: async () => {
-    await api("/sync", { method: "POST", body: "{}" });
-    toast("Updating every shop…");
-    await refreshStatus();
-    storesView();
-  } }, icon("refresh"), status.syncing ? "Updating…" : "Update Now");
+  const syncBtn = el("button", { class: "text-btn", disabled: isSyncing(), onclick: refreshAll },
+    icon("refresh"), isSyncing() ? "Updating…" : "Update Now");
 
   show(page("Stores", { narrow: true, actions: [syncBtn] },
     el("p", { class: "subtitle", text: "Deal Finder reads these shops’ public catalogues for free and records every price change." }),
@@ -716,7 +752,7 @@ function storesView() {
     el("div", { class: "group-label", text: `Catalogues · free` }),
     el("div", { class: "group" }, feeds.map((s) =>
       el("div", { class: "row" },
-        s.syncing ? el("span", { class: "spinner" }) : el("span", { class: `store-dot${s.ok === false ? " bad" : s.ok == null ? " never" : ""}` }),
+        s.syncing || updater.current === s.key ? el("span", { class: "spinner" }) : el("span", { class: `store-dot${s.ok === false ? " bad" : s.ok == null ? " never" : ""}` }),
         el("div", { class: "grow" },
           el("span", { text: s.name }),
           el("span", { class: "sub", text: s.ok === false ? `Couldn’t update: ${s.error || "unknown error"}`
@@ -729,8 +765,18 @@ function storesView() {
       ? `These shops block catalogue reads. Search them from Deals or Outfit through Serper, about A$0.002 a search. ${status.extra_used_today} of ${status.extra_cap} searches used today.`
       : "These shops block catalogue reads. Add SERPER_API_KEY to .env to search them on request (free for the first 2,500 searches)." }),
     el("div", { class: "group-label", text: "AI" }),
-    el("div", { class: "group" }, el("div", { class: "row" }, el("span", { class: "grow", text: "Read briefs with Claude" }),
-      el("span", { class: "value", style: "font-size:13px", text: status.ai ? status.ai_model : "Needs ANTHROPIC_API_KEY" }))),
+    el("div", { class: "group" },
+      el("div", { class: "row" }, el("span", { class: "grow", text: "Read briefs with Claude" }),
+        el("span", { class: "value", style: "font-size:13px", text: status.ai ? status.ai_model : "Needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY" })),
+      el("div", { class: "row" }, el("div", { class: "grow" }, "Style labels",
+        el("span", { class: "sub", text: status.labels?.ai
+          ? `${status.labels.labelled.toLocaleString()} of ${status.labels.total.toLocaleString()} items labelled by ${status.labels.model} · ${status.labels.used_today.toLocaleString()} of ${status.labels.cap.toLocaleString()} today`
+          : "Free rules label every item. Add OPENROUTER_API_KEY for sharper labels." })),
+        el("span", { class: "value", style: "font-size:13px", text: status.labels?.ai ? "Paid" : "Free" }))),
+    status.labels?.ai && el("p", { class: "group-footer", text: "New items are labelled once as shops update, about US$0.0001 each, capped per day. Anything not yet labelled uses the free rules." }),
+    status.signed_in && el("div", { class: "group", style: "margin-top:28px" },
+      el("button", { class: "row", style: "width:100%;border:0;background:none;cursor:pointer;color:var(--red);font-size:17px",
+        onclick: async () => { await api("/logout", { method: "POST" }); location.href = "/login"; } }, "Sign Out")),
   ));
   if (status.syncing) {
     poll = setInterval(async () => {
@@ -749,6 +795,9 @@ async function route() {
   const params = new URLSearchParams(qs || "");
   if (path === "outfit") return outfitView();
   if (path === "saved") return savedView();
+  if (path === "insights" || path === "analytics") {
+    return insightsView({ page, show, dealCard, refreshControl, status: () => status });
+  }
   if (path === "stores") return storesView();
   return dealsView(params);
 }
@@ -762,6 +811,12 @@ window.addEventListener("hashchange", route);
     view.replaceChildren(emptyState("exclaim", "Can’t reach Deal Finder", err.message));
     return;
   }
+  $("#side-refresh").replaceChildren(refreshControl({ compact: true }));
   if (!location.hash) history.replaceState(null, "", "#/deals");
   route();
+  // Hosted: nothing runs between visits except the daily cron, so opening the
+  // app refreshes any shop older than 12 hours. Locally the server does this.
+  if (status.hosted && !status.syncing) {
+    updateShops(status.stores.filter((s) => s.kind !== "search" && s.stale).map((s) => s.key));
+  }
 })();

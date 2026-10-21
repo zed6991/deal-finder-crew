@@ -1,0 +1,74 @@
+/* Insights page: headline figures, charts and bar lists. Uses the tokens in app.css. */
+
+/* ── Insights ───────────────────────────────────────────── */
+
+.headline { margin: 4px 0 28px; }
+.headline-value {
+  font: 800 clamp(56px, 11vw, 104px)/0.95 var(--font-round);
+  letter-spacing: -0.045em; font-variant-numeric: tabular-nums;
+}
+.headline-label { margin-top: 10px; color: var(--label-2); font-size: 19px; font-weight: 500; }
+.headline-skeleton { height: 220px; aspect-ratio: auto; margin-top: 12px; }
+
+.stat-grid { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; margin-bottom: 28px; }
+@media (min-width: 900px) { .stat-grid { grid-template-columns: repeat(4, 1fr); gap: 16px; } }
+.stat-tile { padding: 18px 20px; background: var(--bg-raised); border-radius: var(--radius); box-shadow: var(--shadow); }
+.stat-value { font: 700 34px/1.05 var(--font-round); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.stat-label { margin-top: 4px; font-size: 15px; font-weight: 600; }
+.stat-sub { margin-top: 2px; color: var(--label-2); font-size: 13px; }
+
+.panel { margin-bottom: 16px; padding: 20px 20px 16px; background: var(--bg-raised); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
+.panel-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; margin-bottom: 18px; }
+.panel-head h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+.panel-head span { color: var(--label-2); font-size: 13px; }
+.split { display: grid; gap: 16px; margin-bottom: 16px; }
+.split .panel { margin: 0; display: flex; flex-direction: column; }
+/* A short chart beside a long list grows to fill its panel. */
+.split .chart { flex: 1; display: flex; flex-direction: column; }
+.split .columns { flex: 1; min-height: 180px; height: auto; }
+@media (min-width: 900px) { .split { grid-template-columns: 1fr 1fr; } }
+
+.chart { position: relative; }
+.columns { display: flex; align-items: flex-end; gap: 2px; height: 180px; border-bottom: 1px solid var(--separator); }
+.col {
+  position: relative; flex: 1; height: 100%;
+  display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+  outline: none; cursor: default;
+}
+.col i { display: block; width: 100%; max-width: 56px; background: var(--blue); border-radius: 4px 4px 0 0; transition: opacity 0.2s; }
+.col b { margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--label-2); font-variant-numeric: tabular-nums; }
+.columns:hover .col i { opacity: 0.45; }
+.columns .col:hover i, .columns .col:focus-visible i { opacity: 1; }
+.col[data-tip]:hover::after, .col[data-tip]:focus-visible::after {
+  content: attr(data-tip); position: absolute; bottom: calc(100% + 6px); left: 50%; z-index: 3;
+  transform: translateX(-50%); white-space: nowrap; pointer-events: none;
+  padding: 6px 10px; border-radius: 10px;
+  background: var(--label); color: var(--bg-raised); font-size: 12px; font-weight: 600;
+}
+.axis { display: flex; gap: 2px; margin-top: 6px; }
+.axis span { flex: 1; min-width: 0; color: var(--label-2); font-size: 11px; text-align: center; white-space: nowrap; }
+.chart-empty { margin: 0; padding: 28px 0 20px; color: var(--label-2); font-size: 15px; text-align: center; }
+
+.bars { display: grid; gap: 2px; }
+.bar-row {
+  display: grid; grid-template-columns: minmax(84px, 9.5em) 1fr auto; align-items: center; gap: 12px;
+  min-height: 36px; padding: 0 8px; margin: 0 -8px; border-radius: 10px; color: var(--label);
+}
+a.bar-row:hover { background: var(--fill); }
+.bar-name { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-track { height: 10px; border-radius: 5px; background: var(--fill); overflow: hidden; }
+.bar-track i { display: block; height: 100%; border-radius: 5px; background: var(--blue); animation: grow 0.9s var(--ease); transform-origin: left; }
+@keyframes grow { from { transform: scaleX(0); } }
+.bar-value { min-width: 7.5em; text-align: right; font-variant-numeric: tabular-nums; }
+.bar-value b { font-size: 15px; }
+.bar-value small { margin-left: 6px; color: var(--label-2); font-size: 12px; }
+
+.rail-section { margin-top: 32px; }
+.rail-section .panel-head { margin: 0 4px 12px; }
+.rail {
+  display: flex; gap: 14px; overflow-x: auto; scroll-snap-type: x proximity;
+  margin: 0 -16px; padding: 4px 16px 14px; scrollbar-width: none;
+}
+.rail::-webkit-scrollbar { display: none; }
+.rail .card { flex: none; width: 200px; scroll-snap-align: start; }
+@media (min-width: 900px) { .rail { margin: 0; padding-inline: 0; } .rail .card { width: 220px; } }

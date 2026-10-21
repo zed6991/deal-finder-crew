@@ -13,6 +13,7 @@ from .conftest import raw
 @pytest.fixture
 def client(db, monkeypatch):
     monkeypatch.delenv("SERPER_API_KEY", raising=False)
+    monkeypatch.delenv("APP_PASSWORD", raising=False)
     s = BY_KEY["mjbale"]
     db.record("mjbale", [from_shopify(s, r) for r in [
         raw("coat", "Navy Wool Coat", 300, 700, ptype="Outerwear", tags=["comp:100% Wool"]),
@@ -72,8 +73,10 @@ def test_paid_search_needs_a_key(client):
     assert r.status_code == 400 and "SERPER_API_KEY" in r.json()["detail"]
 
 
-def test_sync_starts_in_background(client):
-    assert client.post("/api/sync", json={}).json() == {"started": True}
+def test_sync_one_shop(client):
+    assert client.post("/api/sync/mjbale").json() == {"error": "no menswear found in the catalogue"}
+    assert client.post("/api/sync/countryroad").status_code == 404
+    assert client.post("/api/sync/nope").status_code == 404
 
 
 def test_paid_search_filters_caches_and_caps(db, monkeypatch):
@@ -87,9 +90,9 @@ def test_paid_search_filters_caches_and_caps(db, monkeypatch):
 
         def json(self):
             return {"shopping": [
-                {"title": "Men's Navy Blazer", "source": "THE ICONIC", "price": "A$199.00", "link": "https://www.theiconic.com.au/x"},
+                {"title": "Men's Navy Blazer", "source": "Country Road", "price": "A$199.00", "link": "https://www.countryroad.com.au/x"},
                 {"title": "Navy Blazer", "source": "Some Other Shop", "price": "$99", "link": "https://other/x"},
-                {"title": "Women's Blazer", "source": "David Jones", "price": "$250", "link": "https://www.davidjones.com/y"},
+                {"title": "Women's Blazer", "source": "Country Road", "price": "$250", "link": "https://www.countryroad.com.au/y"},
             ]}
 
     def post(*args, **kwargs):
@@ -97,8 +100,36 @@ def test_paid_search_filters_caches_and_caps(db, monkeypatch):
         return Resp()
 
     first = extra.search(db, "navy blazer", post=post)
-    assert [(i["store"], i["price"]) for i in first["items"]] == [("theiconic", 199.0)]
+    assert [(i["store"], i["price"]) for i in first["items"]] == [("countryroad", 199.0)]
     assert extra.search(db, "navy blazer", post=post)["cached"] is True
     with pytest.raises(RuntimeError, match="limit"):
         extra.search(db, "brown loafers", post=post)
     assert calls == ["mens navy blazer"]
+
+
+def test_analytics(client):
+    r = client.get("/api/analytics").json()
+    assert r["totals"]["tracked"] == 3 and r["totals"]["on_sale"] == 3
+    assert r["top_deals"][0]["title"] == "Navy Wool Coat" and r["top_deals"][0]["saved"] is False
+    assert len(r["drops_by_day"]) == 30 and r["stores"][0]["key"] == "mjbale"
+
+
+def test_style_filters_and_vocabulary(client):
+    st = client.get("/api/status").json()
+    assert st["aesthetics"]["old_money"] == "Old money" and st["occasions"]["office"] == "Office"
+    assert st["labels"]["ai"] is False and st["labels"]["total"] == 3
+    r = client.get("/api/deals", params={"occasion": "office"}).json()
+    assert {d["title"] for d in r["items"]} >= {"White Oxford Shirt"}
+    assert all("office" in d["style"]["occasions"] for d in r["items"])
+    assert client.get("/api/deals", params={"style": "goth"}).status_code == 422
+    d = client.get("/api/products/mjbale:shirt").json()
+    assert "aesthetics" in d["style"]
+
+
+def test_outfit_from_a_look_alone(client):
+    r = client.post("/api/outfit", json={"aesthetic": "old_money", "budget": 500})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["plan"]["aesthetic"] == "old_money" and body["looks"]
+    assert client.post("/api/outfit", json={"budget": 500}).status_code == 422
+    assert client.post("/api/outfit", json={"brief": "x", "occasion": "rave", "budget": 500}).status_code == 422

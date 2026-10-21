@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from deal_finder.db import DB
@@ -20,9 +22,30 @@ def raw(handle, title, price, was=None, *, ptype="", vendor="M.J.Bale", tags=(),
     }
 
 
-@pytest.fixture
-def db():
-    return DB(":memory:")
+@pytest.fixture(autouse=True)
+def _no_paid_keys(monkeypatch):
+    """Tests never spend money: paid features see no keys unless a test sets one."""
+    for var in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "SERPER_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+
+
+PG_URL = os.environ.get("TEST_DATABASE_URL")
+BACKENDS = ["sqlite", "postgres"] if PG_URL else ["sqlite"]
+
+
+@pytest.fixture(params=BACKENDS)
+def db(request):
+    """Every database test runs on SQLite, and on Postgres when TEST_DATABASE_URL is set."""
+    if request.param == "sqlite":
+        yield DB(":memory:")
+        return
+    import psycopg
+
+    with psycopg.connect(PG_URL, autocommit=True) as conn:
+        conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    database = DB(url=PG_URL)
+    yield database
+    database.conn.close()
 
 
 @pytest.fixture
