@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from deal_finder.db import DB, parse_time
+from deal_finder.style import fits, style_of
 from deal_finder.stores import BY_KEY
 
 STOREWIDE_SHARE = 0.6
@@ -51,6 +52,8 @@ class Filters:
     premium_only: bool = False
     include_storewide: bool = True
     in_stock: bool = True
+    style: str = ""  # a look from style.AESTHETICS, e.g. old_money
+    occasion: str = ""  # an occasion from style.OCCASIONS, e.g. office
     sort: str = "score"  # score | discount | price | price_desc | newest
     limit: int = 60
     offset: int = 0
@@ -141,6 +144,7 @@ def score_row(row: sqlite3.Row | dict, shares: dict[str, float], at: datetime | 
         "score": score,
         "label": "Great deal" if score >= 75 else "Good deal" if score >= 55 else "Fair",
         "badges": badges,
+        "style": style_of(r),
     }
 
 
@@ -187,6 +191,8 @@ def search(db: DB, f: Filters, sizes: dict[str, str] | None = None) -> dict:
             wanted = sizes.get(GROUP_OF.get(d["category"], ""), "")
             if wanted and not size_matches(wanted, d["sizes"]):
                 continue
+        if not fits(d["style"], f.style, f.occasion):
+            continue
         items.append(d)
 
     keys = {

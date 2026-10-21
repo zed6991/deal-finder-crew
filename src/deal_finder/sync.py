@@ -11,7 +11,8 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from deal_finder.db import DB, parse_time
+from deal_finder import style
+from deal_finder.db import DB, ON_VERCEL, parse_time
 from deal_finder.normalize import Product, from_listing, from_shopify
 from deal_finder.scrape import fetch_listing
 from deal_finder.stores import FEEDS, Store
@@ -25,6 +26,9 @@ HEADERS = {
 PAGE_SIZE = 250
 MAX_PAGES = 40
 STALE_AFTER = timedelta(hours=12)
+# Seconds of model labelling after each shop, when a key is set. Hosted, one
+# shop syncs per request under a 300 s limit, so leave the rest to the cron.
+LABEL_BUDGET = 30 if ON_VERCEL else 60
 
 
 def fetch_shopify(store: Store, session: requests.Session | None = None, pause: float = 1.0) -> list[dict]:
@@ -93,6 +97,10 @@ class Syncer:
             if not products:
                 raise RuntimeError("no menswear found in the catalogue")
             result = self.db.record(store.key, products)
+            try:
+                result["labelled"] = style.label_new(self.db, store.key, LABEL_BUDGET).get("labelled", 0)
+            except Exception as exc:  # labels are a bonus; the rules cover anything missed
+                log.warning("%s labelling failed: %s", store.name, exc)
             log.info("%s: %s", store.name, result)
             return result
         except Exception as exc:  # one broken shop must not stop the rest

@@ -10,6 +10,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -49,6 +50,9 @@ CREATE TABLE IF NOT EXISTS syncs (
 );
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY, value TEXT, at TEXT
+);
+CREATE TABLE IF NOT EXISTS styles (
+    product_id TEXT PRIMARY KEY, data TEXT, model TEXT, version INTEGER, at TEXT
 );
 """
 
@@ -220,9 +224,10 @@ class DB:
         if self._catalogue and self._catalogue[0] == version:
             return self._catalogue[1]
         rows = self.query(
-            "SELECT id, store, brand, title, url, image, category, colour, composition, fabric, "
-            "sizes, price, was_price, in_stock, low_price, prev_price, price_changed_at, first_seen "
-            "FROM products WHERE active = 1"
+            "SELECT p.id, p.store, p.brand, p.title, p.url, p.image, p.category, p.colour, p.composition, "
+            "p.fabric, p.sizes, p.price, p.was_price, p.in_stock, p.low_price, p.prev_price, "
+            "p.price_changed_at, p.first_seen, s.data AS ai_style "
+            "FROM products p LEFT JOIN styles s ON s.product_id = p.id WHERE p.active = 1"
         )
         for r in rows:
             r["sizes"] = json.loads(r["sizes"] or "[]")
@@ -230,11 +235,23 @@ class DB:
         return rows
 
     def product(self, pid: str) -> dict | None:
-        rows = self.query("SELECT * FROM products WHERE id = ?", (pid,))
+        rows = self.query(
+            "SELECT p.*, s.data AS ai_style FROM products p LEFT JOIN styles s ON s.product_id = p.id WHERE p.id = ?",
+            (pid,))
         return rows[0] if rows else None
 
     def history(self, pid: str) -> list[dict]:
         return self.query("SELECT at, price, was_price FROM prices WHERE product_id = ? ORDER BY at", (pid,))
+
+    def write_styles(self, rows: list[tuple]) -> None:
+        """Store model labels (product_id, data, model, version, at); cached catalogues reload."""
+        if not rows:
+            return
+        at = now()
+        self._write([
+            (_upsert("styles", ["product_id", "data", "model", "version", "at"], "product_id"), rows),
+            (_upsert("kv", ["key", "value", "at"], "key"), ("catalogue_version", json.dumps(f"styles:{time.time_ns()}"), at)),
+        ])
 
     # ── Saved items ───────────────────────────────────────────
 

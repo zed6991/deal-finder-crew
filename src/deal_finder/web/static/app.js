@@ -11,7 +11,7 @@ const view = $("#view");
 
 // ── App state ───────────────────────────────────────────────
 
-let status = { stores: [], categories: [], settings: { sizes: {} }, size_groups: {} };
+let status = { stores: [], categories: [], settings: { sizes: {} }, size_groups: {}, aesthetics: {}, occasions: {} };
 let poll = null;
 
 // Shops refresh one request at a time, driven from the page, so each request
@@ -243,6 +243,27 @@ function featureCard(d) {
         url && el("a", { class: "btn", href: url, target: "_blank", rel: "noopener noreferrer" }, `Shop at ${d.store_name}`, icon("arrow-up-right")))));
 }
 
+// Pick one, or none: tapping the chosen chip again clears it.
+function choiceChips(options, value, onpick) {
+  let current = value;
+  const chips = Object.entries(options).map(([key, label]) => {
+    const chip = el("button", { type: "button", class: "chip", "aria-pressed": String(key === current), text: label });
+    chip.addEventListener("click", () => {
+      current = current === key ? "" : key;
+      chips.forEach((c, i) => c.setAttribute("aria-pressed", String(Object.keys(options)[i] === current)));
+      onpick(current);
+    });
+    return chip;
+  });
+  return el("div", { class: "chips" }, chips);
+}
+
+function styleText(d) {
+  const st = d.style || {};
+  return [(st.aesthetics || []).map((a) => status.aesthetics[a]).filter(Boolean).join(", "),
+    (st.occasions || []).map((o) => status.occasions[o]).filter(Boolean).join(", ")];
+}
+
 function skeletonGrid(n = 8) {
   return el("div", { class: "grid" }, Array.from({ length: n }, () => el("div", { class: "skeleton" })));
 }
@@ -251,7 +272,7 @@ function skeletonGrid(n = 8) {
 
 const DEFAULT_FILTERS = {
   q: "", category: [], store: [], min_discount: 0, min_price: "", max_price: "", fabric: "any",
-  my_sizes: false, premium_only: false, include_storewide: true, sort: "score",
+  my_sizes: false, premium_only: false, include_storewide: true, style: "", occasion: "", sort: "score",
 };
 let filters = { ...DEFAULT_FILTERS, ...local.get("df.filters", {}) };
 
@@ -264,6 +285,8 @@ function filterCount() {
   if (filters.my_sizes) n++;
   if (filters.premium_only) n++;
   if (!filters.include_storewide) n++;
+  if (filters.style) n++;
+  if (filters.occasion) n++;
   return n;
 }
 
@@ -272,7 +295,7 @@ function queryString(f, offset = 0) {
   if (f.q) p.set("q", f.q);
   f.category.forEach((c) => p.append("category", c));
   f.store.forEach((s) => p.append("store", s));
-  for (const k of ["min_discount", "fabric", "sort"]) if (f[k] !== "" && f[k] != null) p.set(k, f[k]);
+  for (const k of ["min_discount", "fabric", "style", "occasion", "sort"]) if (f[k] !== "" && f[k] != null) p.set(k, f[k]);
   // An empty or zero price means no limit.
   for (const k of ["min_price", "max_price"]) if (Number(f[k]) > 0) p.set(k, Number(f[k]));
   for (const k of ["my_sizes", "premium_only", "include_storewide"]) p.set(k, f[k]);
@@ -315,9 +338,19 @@ async function dealsView(params) {
       .map(([v, t]) => el("option", { value: v, text: t, selected: v === filters.sort })));
   sortSel.addEventListener("change", () => { filters.sort = sortSel.value; local.set("df.filters", { ...filters, category: [] }); load(); });
 
+  const subtitle = el("p", { class: "subtitle" });
+  function subtitleText() {
+    const n = status.stores.filter((s) => s.kind !== "search" && s.products).length;
+    const styled = [status.aesthetics[filters.style], status.occasions[filters.occasion] && `for ${status.occasions[filters.occasion].toLowerCase()}`].filter(Boolean).join(" ");
+    if (shop) return `Everything marked down at ${shop.name}, best value first.`;
+    if (cat) return `Marked-down ${cat.toLowerCase()} from ${n} shops, best value first.`;
+    return styled ? `${styled} markdowns from ${n} shops, ranked by real value.` : `The best markdowns from ${n} shops, ranked by real value.`;
+  }
+
   let offset = 0;
   async function load(append = false) {
     markFilters();
+    subtitle.textContent = subtitleText();
     if (!append) { offset = 0; grid.replaceChildren(...skeletonGrid().children); more.replaceChildren(); }
     let r;
     try {
@@ -352,10 +385,9 @@ async function dealsView(params) {
         icon("chevron", "chev"))));
   }
 
-  const shops = status.stores.filter((s) => s.kind !== "search" && s.products).length;
+  subtitle.textContent = subtitleText();
   show(page(title, { aside: refreshControl() },
-    el("p", { class: "subtitle", text: shop ? `Everything marked down at ${shop.name}, best value first.` : cat ? `Marked-down ${cat.toLowerCase()} from ${shops} shops, best value first.`
-      : `The best markdowns from ${shops} shops, ranked by real value.` }),
+    subtitle,
     storageNotice(),
     isSyncing() && status.empty ? syncingNotice() : null,
     hero,
@@ -410,6 +442,12 @@ function openFilters(onapply) {
   const sizesSet = Object.values(status.settings.sizes).some(Boolean);
 
   openSheet("Filters", [
+    el("div", { class: "group-label", text: "Style" }),
+    el("div", { class: "group" },
+      el("div", { class: "row stack" }, el("span", { class: "row-label", text: "Look" }),
+        choiceChips(status.aesthetics, draft.style, (v) => { draft.style = v; })),
+      el("div", { class: "row stack" }, el("span", { class: "row-label", text: "Occasion" }),
+        choiceChips(status.occasions, draft.occasion, (v) => { draft.occasion = v; }))),
     el("div", { class: "group-label", text: "Discount" }),
     el("div", { class: "group" },
       el("div", { class: "row stack" }, segmented("f-disc", [[0, "Any"], [20, "20%+"], [30, "30%+"], [50, "50%+"]], draft.min_discount, (v) => { draft.min_discount = Number(v); }, "wide")),
@@ -490,8 +528,11 @@ async function openProduct(id) {
 
   const mine = mySizesFor(d.category);
   const fabricText = { natural: "Natural fibres", stretch: "Natural with stretch", synthetic: "Contains synthetics", unknown: "Not listed" }[d.fabric];
+  const [looks, occasions] = styleText(d);
   const facts = [
     ["Shop", d.store_name],
+    ["Style", looks],
+    ["Good for", occasions],
     ["Colour", d.colour],
     ["Fabric", [d.composition, fabricText].filter(Boolean).join(" · ")],
     d.saved_price != null && ["Price when saved", money(d.saved_price)],
@@ -539,11 +580,11 @@ async function openProduct(id) {
 
 // ── Outfit ──────────────────────────────────────────────────
 
-const IDEAS = ["Smart casual dinner", "Office, navy and grey", "Summer wedding", "Weekend, relaxed", "Winter layers", "Navy blazer, white shirt, brown loafers"];
+const IDEAS = ["Old money date night", "Office, navy and grey", "Summer wedding", "Weekend, relaxed", "Winter layers", "Navy blazer, white shirt, brown loafers"];
 
 function outfitView() {
   const last = local.get("df.outfit", {});
-  const form = { brief: "", budget: 600, use_ai: false, my_sizes: true, premium_only: false, fabric: "any", include_storewide: true, ...last };
+  const form = { brief: "", aesthetic: "", occasion: "", budget: 600, use_ai: false, my_sizes: true, premium_only: false, fabric: "any", include_storewide: true, ...last };
 
   const brief = el("textarea", { rows: 3, maxlength: 400, "aria-label": "Describe what you need", placeholder: "What’s it for? e.g. smart casual dinner, navy and stone. Or list pieces: navy blazer, white shirt, brown loafers" });
   brief.value = form.brief;
@@ -561,6 +602,13 @@ function outfitView() {
 
   const formEl = el("form", {},
     el("div", { class: "composer" }, brief, ideas),
+    el("div", { class: "group-label", text: "Look and occasion" }),
+    el("div", { class: "group" },
+      el("div", { class: "row stack" }, el("span", { class: "row-label", text: "Look" }),
+        choiceChips(status.aesthetics, form.aesthetic, (v) => { form.aesthetic = v; })),
+      el("div", { class: "row stack" }, el("span", { class: "row-label", text: "Occasion" }),
+        choiceChips(status.occasions, form.occasion, (v) => { form.occasion = v; }))),
+    el("p", { class: "group-footer", text: "Optional. Picks here beat what the brief suggests. Pick one and you can leave the brief empty." }),
     el("div", { class: "group-label", text: "Budget" }),
     el("div", { class: "group" },
       el("div", { class: "row" }, el("span", { text: "Total to spend" }), el("span", { class: "money-field" }, "$", budget)),
@@ -581,7 +629,7 @@ function outfitView() {
   formEl.addEventListener("submit", async (e) => {
     e.preventDefault();
     const body = { ...form, brief: brief.value.trim(), budget: Number(budget.value), use_ai: form.use_ai && status.ai };
-    if (body.brief.length < 2) { brief.focus(); toast("Describe what you need first"); return; }
+    if (body.brief.length < 2 && !body.aesthetic && !body.occasion) { brief.focus(); toast("Describe what you need, or pick a look"); return; }
     local.set("df.outfit", body);
     go.disabled = true;
     results.replaceChildren(el("div", { class: "result-meta" }, el("span", { class: "spinner" }), el("span", { text: body.use_ai ? "Reading your brief…" : "Picking pieces…" })));
@@ -595,33 +643,35 @@ function outfitView() {
   });
 
   show(page("Outfit", { narrow: true },
-    el("p", { class: "subtitle", text: "Describe a look and a budget. You get the best-value piece for each part of it, with alternatives." }),
+    el("p", { class: "subtitle", text: "Describe a look, or pick one, and set a budget. You get up to three outfits that go together, mixing shops, with alternatives for every piece." }),
     storageNotice(), status.empty ? syncingNotice() : null, formEl, results));
 }
 
 function renderOutfit(r, box) {
-  const picks = r.slots.map((s) => s.pick);
+  const looks = r.looks?.length ? r.looks : [{ picks: r.slots.map((s) => s.pick) }];
+  let picks = [...looks[0].picks];
   const summary = el("div", { class: "summary" });
   const drawSummary = () => {
     const chosen = picks.filter(Boolean);
     const total = chosen.reduce((a, d) => a + d.price, 0);
     const saved = chosen.reduce((a, d) => a + d.saving, 0);
+    const shops = new Set(chosen.map((d) => d.store)).size;
     summary.replaceChildren(
       el("div", {},
         el("div", { class: "k", text: r.plan.look }),
         el("div", { class: "v" }, money(total), el("small", { text: ` of ${money(r.budget)}` })),
         el("div", { class: "meter" }, el("i", { style: `width:${Math.min(100, (total / r.budget) * 100)}%;${total > r.budget ? "background:var(--red)" : ""}` })),
-        el("div", { class: "meter-caption", text: total > r.budget ? `${money(total - r.budget)} over budget` : `${money(r.budget - total)} left · ${chosen.length} pieces` })),
+        el("div", { class: "meter-caption", text: total > r.budget ? `${money(total - r.budget)} over budget` : `${money(r.budget - total)} left · ${chosen.length} pieces from ${shops} ${shops === 1 ? "shop" : "shops"}` })),
       el("div", {}, el("div", { class: "k", text: "You save" }), el("div", { class: `v${saved ? " green" : ""}`, text: money(saved) })),
       el("div", {}, el("div", { class: "k", text: "Read by" }), el("div", { class: "v", style: "font-size:22px", text: { ai: "AI", preset: "Preset", keywords: "Your list" }[r.plan.source] })));
   };
-  drawSummary();
 
+  const draws = [];
   const slots = r.slots.map((s, i) => {
     const body = el("div", { class: "slot-body" });
     const draw = () => {
       const pick = picks[i];
-      const options = [s.pick, ...s.alternates].filter(Boolean).filter((d, j, a) => a.findIndex((x) => x.id === d.id) === j);
+      const options = [pick, s.pick, ...s.alternates].filter(Boolean).filter((d, j, a) => a.findIndex((x) => x.id === d.id) === j);
       body.replaceChildren(
         pick ? dealCard(pick) : el("div", { class: "error-card", text: "Nothing fits the budget and sizes. Alternatives are on the right." }),
         options.length > 1 ? el("div", {},
@@ -631,16 +681,21 @@ function renderOutfit(r, box) {
             onopen: () => { picks[i] = d; draw(); drawSummary(); },
           })))) : null);
     };
-    draw();
+    draws.push(draw);
     const words = [...s.slot.colours, ...s.slot.keywords].slice(0, 4).join(", ");
     return el("section", { class: "slot" },
       el("div", { class: "slot-head" }, el("h3", { text: s.slot.category }), el("span", { text: words })), body);
   });
+  const drawAll = () => { draws.forEach((d) => d()); drawSummary(); };
+  drawAll();
+
+  const switcher = looks.length > 1 ? el("div", { class: "row stack", style: "padding:0;margin:0 0 16px" },
+    segmented("o-look", looks.map((l, i) => [i, `Look ${i + 1} · ${money(l.total)}`]), 0, (v) => { picks = [...looks[Number(v)].picks]; drawAll(); }, "wide")) : null;
 
   const extraBox = el("div");
   box.replaceChildren(
-    el("div", { class: "section-title", text: "Your outfit" }),
-    summary, ...slots,
+    el("div", { class: "section-title", text: looks.length > 1 ? `${looks.length} outfits` : "Your outfit" }),
+    switcher, summary, ...slots,
     status.extra && el("div", { class: "group", style: "margin-top:28px" },
       el("button", { class: "row", style: "width:100%;border:0;background:none;cursor:pointer;text-align:left", onclick: () => runExtra(`${r.plan.look} ${r.slots.map((s) => s.slot.category).slice(0, 2).join(" ")}`, extraBox) },
         el("span", { class: "grow", text: "Also check Country Road" }), icon("chevron", "chev"))),
@@ -710,8 +765,15 @@ function storesView() {
       ? `These shops block catalogue reads. Search them from Deals or Outfit through Serper, about A$0.002 a search. ${status.extra_used_today} of ${status.extra_cap} searches used today.`
       : "These shops block catalogue reads. Add SERPER_API_KEY to .env to search them on request (free for the first 2,500 searches)." }),
     el("div", { class: "group-label", text: "AI" }),
-    el("div", { class: "group" }, el("div", { class: "row" }, el("span", { class: "grow", text: "Read briefs with Claude" }),
-      el("span", { class: "value", style: "font-size:13px", text: status.ai ? status.ai_model : "Needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY" }))),
+    el("div", { class: "group" },
+      el("div", { class: "row" }, el("span", { class: "grow", text: "Read briefs with Claude" }),
+        el("span", { class: "value", style: "font-size:13px", text: status.ai ? status.ai_model : "Needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY" })),
+      el("div", { class: "row" }, el("div", { class: "grow" }, "Style labels",
+        el("span", { class: "sub", text: status.labels?.ai
+          ? `${status.labels.labelled.toLocaleString()} of ${status.labels.total.toLocaleString()} items labelled by ${status.labels.model} · ${status.labels.used_today.toLocaleString()} of ${status.labels.cap.toLocaleString()} today`
+          : "Free rules label every item. Add OPENROUTER_API_KEY for sharper labels." })),
+        el("span", { class: "value", style: "font-size:13px", text: status.labels?.ai ? "Paid" : "Free" }))),
+    status.labels?.ai && el("p", { class: "group-footer", text: "New items are labelled once as shops update, about US$0.0001 each, capped per day. Anything not yet labelled uses the free rules." }),
     status.signed_in && el("div", { class: "group", style: "margin-top:28px" },
       el("button", { class: "row", style: "width:100%;border:0;background:none;cursor:pointer;color:var(--red);font-size:17px",
         onclick: async () => { await api("/logout", { method: "POST" }); location.href = "/login"; } }, "Sign Out")),

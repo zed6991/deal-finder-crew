@@ -21,6 +21,8 @@ from .conftest import raw
     ("Merino Crew Neck", "Knitwear"),
     ("Wool Overcoat", "Outerwear"),
     ("Silk Tie", "Accessories"),
+    ("Morris Knit Scarf", "Accessories"),
+    ("Cashmere Ribbed Beanie", "Accessories"),
     ("Lapel Pin", None),
 ])
 def test_category_of(text, category):

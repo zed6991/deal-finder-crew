@@ -22,6 +22,13 @@ def raw(handle, title, price, was=None, *, ptype="", vendor="M.J.Bale", tags=(),
     }
 
 
+@pytest.fixture(autouse=True)
+def _no_paid_keys(monkeypatch):
+    """Tests never spend money: paid features see no keys unless a test sets one."""
+    for var in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "SERPER_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+
+
 PG_URL = os.environ.get("TEST_DATABASE_URL")
 BACKENDS = ["sqlite", "postgres"] if PG_URL else ["sqlite"]
 

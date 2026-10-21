@@ -27,6 +27,7 @@ _RULES: list[tuple[str, str]] = [
     ("Tailoring", r"blazer|sport ?coat|sports? jacket|suit jacket|waistcoat|\bvest\b"),
     ("Shoes", r"shoe|boot|loafer|sneaker|trainer|derby|brogue|chukka|\bmonk\b|slipper|sandal|espadrille"),
     ("Shirts", r"shirt|overshirt"),
+    ("Accessories", r"\bscarf\b|\bscarves\b|beanie|\bgloves?\b"),  # before knitwear: "Knit Scarf"
     ("Knitwear", r"knit|sweater|jumper|cardigan|crew ?neck|quarter zip|1/4 zip|merino|cashmere"),
     ("Sweats", r"hood|sweat|fleece|track ?top"),
     ("Outerwear", r"jacket|coat|parka|bomber|gilet|puffer|trench|overcoat|anorak"),

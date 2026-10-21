@@ -112,3 +112,24 @@ def test_analytics(client):
     assert r["totals"]["tracked"] == 3 and r["totals"]["on_sale"] == 3
     assert r["top_deals"][0]["title"] == "Navy Wool Coat" and r["top_deals"][0]["saved"] is False
     assert len(r["drops_by_day"]) == 30 and r["stores"][0]["key"] == "mjbale"
+
+
+def test_style_filters_and_vocabulary(client):
+    st = client.get("/api/status").json()
+    assert st["aesthetics"]["old_money"] == "Old money" and st["occasions"]["office"] == "Office"
+    assert st["labels"]["ai"] is False and st["labels"]["total"] == 3
+    r = client.get("/api/deals", params={"occasion": "office"}).json()
+    assert {d["title"] for d in r["items"]} >= {"White Oxford Shirt"}
+    assert all("office" in d["style"]["occasions"] for d in r["items"])
+    assert client.get("/api/deals", params={"style": "goth"}).status_code == 422
+    d = client.get("/api/products/mjbale:shirt").json()
+    assert "aesthetics" in d["style"]
+
+
+def test_outfit_from_a_look_alone(client):
+    r = client.post("/api/outfit", json={"aesthetic": "old_money", "budget": 500})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["plan"]["aesthetic"] == "old_money" and body["looks"]
+    assert client.post("/api/outfit", json={"budget": 500}).status_code == 422
+    assert client.post("/api/outfit", json={"brief": "x", "occasion": "rave", "budget": 500}).status_code == 422

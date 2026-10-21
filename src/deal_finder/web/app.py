@@ -10,9 +10,9 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from deal_finder import analytics, auth, extra, stylist
+from deal_finder import analytics, auth, extra, style, stylist
 from deal_finder.db import DB, ON_VERCEL
 from deal_finder.deals import SIZE_GROUPS, Filters, sale_shares, score_row, search
 from deal_finder.normalize import CATEGORIES
@@ -30,8 +30,14 @@ class Settings(BaseModel):
     sizes: dict[str, str] = Field(default_factory=dict)
 
 
+Look = Literal[("", *style.AESTHETICS)]  # type: ignore[valid-type]
+Occasion = Literal[("", *style.OCCASIONS)]  # type: ignore[valid-type]
+
+
 class OutfitRequest(BaseModel):
-    brief: str = Field(min_length=2, max_length=400)
+    brief: str = Field("", max_length=400)
+    aesthetic: Look = ""
+    occasion: Occasion = ""
     budget: float = Field(gt=0, le=20_000)
     use_ai: bool = False
     my_sizes: bool = True
@@ -39,6 +45,12 @@ class OutfitRequest(BaseModel):
     fabric: Literal["any", "natural", "stretch"] = "any"
     include_storewide: bool = True
     stores: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def wants_something(self):
+        if len(self.brief.strip()) < 2 and not (self.aesthetic or self.occasion):
+            raise ValueError("Describe what you need, or pick a look or an occasion")
+        return self
 
 
 class Login(BaseModel):
@@ -129,6 +141,12 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
             "settings": settings(),
             "ai": stylist.ai_available(),
             "ai_model": stylist.ai_model(),
+            "aesthetics": style.AESTHETICS,
+            "occasions": style.OCCASIONS,
+            "labels": {
+                **style.counts(db), "ai": style.available(), "model": style.LABEL_MODEL,
+                "used_today": style.used_today(db), "cap": style.LABEL_CAP,
+            },
             "extra": extra.available(),
             "extra_used_today": extra.used_today(db),
             "extra_cap": extra.DAILY_CAP,
@@ -152,7 +170,11 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
         """Vercel Cron: refresh stale shops until the time budget runs out."""
         if not auth.cron_ok(request.headers.get("authorization")):
             raise HTTPException(401, "Unauthorized")
-        return syncer.sync_until(time.monotonic() + CRON_BUDGET)
+        deadline = time.monotonic() + CRON_BUDGET
+        result = syncer.sync_until(deadline)
+        # Spare time labels anything a shop's own sync ran out of time for.
+        result["labels"] = style.label_new(db, budget_s=max(0, deadline - time.monotonic()))
+        return result
 
     # ── Deals ─────────────────────────────────────────────────
 
@@ -168,6 +190,8 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
         my_sizes: bool = False,
         premium_only: bool = False,
         include_storewide: bool = True,
+        look: Look = Query("", alias="style"),
+        occasion: Occasion = "",
         sort: Literal["score", "discount", "price", "price_desc", "newest"] = "score",
         limit: int = Query(48, ge=1, le=200),
         offset: int = Query(0, ge=0),
@@ -175,8 +199,8 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
         f = Filters(
             q=q[:100], categories=[c for c in category if c in CATEGORIES], stores=store,
             min_discount=min_discount, min_price=min_price, max_price=max_price, fabric=fabric, my_sizes=my_sizes,
-            premium_only=premium_only, include_storewide=include_storewide, sort=sort,
-            limit=limit, offset=offset,
+            premium_only=premium_only, include_storewide=include_storewide, style=look, occasion=occasion,
+            sort=sort, limit=limit, offset=offset,
         )
         result = search(db, f, settings()["sizes"])
         saved = db.saved()
@@ -241,17 +265,18 @@ def create_app(db: DB | None = None, syncer: Syncer | None = None, auto_sync: bo
 
     @app.post("/api/outfit")
     def outfit(body: OutfitRequest) -> dict:
-        plan = stylist.plan_for(body.brief, db, use_ai=body.use_ai)
+        plan = stylist.plan_for(body.brief, db, use_ai=body.use_ai,
+                                aesthetic=body.aesthetic or None, occasion=body.occasion or None)
         base = Filters(
             stores=body.stores, fabric=body.fabric, my_sizes=body.my_sizes,
             premium_only=body.premium_only, include_storewide=body.include_storewide,
         )
         result = stylist.build_outfit(db, plan, body.budget, settings()["sizes"], base)
         saved = db.saved()
-        for slot in result["slots"]:
-            for d in [slot["pick"], *slot["alternates"]]:
-                if d:
-                    d["saved"] = d["id"] in saved
+        for d in [p for s in result["slots"] for p in (s["pick"], *s["alternates"])] + \
+                [p for look in result["looks"] for p in look["picks"]]:
+            if d:
+                d["saved"] = d["id"] in saved
         return result
 
     @app.get("/api/extra")

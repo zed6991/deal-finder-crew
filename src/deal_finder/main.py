@@ -4,7 +4,8 @@
     deal_finder                     open the app (same as `serve`)
     deal_finder sync                refresh every shop's catalogue (free)
     deal_finder deals [words]       top deals in the terminal
-    deal_finder outfit "brief" 500  build an outfit within a budget
+    deal_finder outfit "brief" 500  build outfits within a budget
+    deal_finder label               label new products' style with a model (paid)
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import sys
 from dotenv import load_dotenv
 
 from deal_finder.normalize import CATEGORIES
+from deal_finder.style import AESTHETICS, OCCASIONS
 
 load_dotenv()
 
@@ -77,16 +79,30 @@ def outfit(args) -> None:
     from deal_finder.deals import Filters
 
     db = _db()
-    plan = stylist.plan_for(args.brief, db, use_ai=args.ai)
+    plan = stylist.plan_for(args.brief, db, use_ai=args.ai, aesthetic=args.style, occasion=args.occasion)
     sizes = db.get("settings", {}).get("sizes", {})
     result = stylist.build_outfit(db, plan, args.budget, sizes, Filters(my_sizes=bool(sizes)))
-    print(f"{plan.look} (read by {plan.source}), budget ${args.budget:,.0f}\n")
-    for s in result["slots"]:
-        d = s["pick"]
-        print(f"{s['slot']['category']:<12}", _line(d) if d else "nothing within budget")
-        if d:
-            print(f"{'':<12}      {d['url']}")
-    print(f"\nTotal ${result['total']:,.2f} · saved ${result['saved']:,.2f} · ${result['remaining']:,.2f} left")
+    print(f"{plan.look} (read by {plan.source}), budget ${args.budget:,.0f}")
+    for n, look in enumerate(result["looks"], 1):
+        print(f"\nLook {n}: ${look['total']:,.2f} from {look['shops']} shops · saved ${look['saved']:,.2f}")
+        for s, d in zip(result["slots"], look["picks"]):
+            print(f"{s['slot']['category']:<12}", _line(d) if d else "nothing within budget")
+            if d:
+                print(f"{'':<12}      {d['url']}")
+    if not result["looks"]:
+        print("\nNothing fits. Try a bigger budget or fewer limits.")
+
+
+def label(args) -> None:
+    from deal_finder import style
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    if not style.available():
+        sys.exit("Add OPENROUTER_API_KEY to .env to label products with a model. The free rules already label everything.")
+    db = _db()
+    print(style.label_new(db, budget_s=args.minutes * 60))
+    c = style.counts(db)
+    print(f"{c['labelled']:,} of {c['total']:,} products labelled by {style.LABEL_MODEL}.")
 
 
 def cli() -> None:
@@ -115,8 +131,14 @@ def cli() -> None:
     s = sub.add_parser("outfit", help="build an outfit within a budget")
     s.add_argument("brief")
     s.add_argument("budget", type=float)
-    s.add_argument("--ai", action="store_true", help="read the brief with Claude (needs ANTHROPIC_API_KEY)")
+    s.add_argument("--ai", action="store_true", help="read the brief with Claude (needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY)")
+    s.add_argument("--style", choices=list(AESTHETICS), help="a look, e.g. old_money")
+    s.add_argument("--occasion", choices=list(OCCASIONS), help="what it is for, e.g. office")
     s.set_defaults(run=outfit)
+
+    s = sub.add_parser("label", help="label new products' style with a model (needs OPENROUTER_API_KEY)")
+    s.add_argument("--minutes", type=float, default=10, help="stop after this long")
+    s.set_defaults(run=label)
 
     args = p.parse_args()
     if not args.command:

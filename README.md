@@ -3,8 +3,11 @@
 Find genuine markdowns on mid-to-premium menswear from Australian shops.
 
 Deal Finder reads the full public catalogues of 13 shops for free, keeps every
-price it sees, and ranks what is actually a good buy. There are no AI agents
-and no search costs unless you turn them on.
+price it sees, and ranks what is actually a good buy. Tell it the look you like
+(old money, minimalist, coastal…), what it's for (office, date night, a
+wedding…) and your budget, and it builds outfits that go together from pieces
+on sale across shops, in your sizes. There are no AI agents and no costs
+unless you turn them on.
 
 ![Deals on desktop](docs/deals.jpg)
 
@@ -54,6 +57,35 @@ Gazman and Oxford mark most of their range down all the time, so their "was"
 discounts count at half and carry a **Store-wide sale** badge. You can hide
 them in Filters. **Just dropped** means the price fell since an earlier check.
 
+## Find your style
+
+Every item is labelled with the **looks** it suits, the **occasions** it suits,
+how formal it is (1 to 5) and whether it's patterned:
+
+| Looks | Occasions |
+|---|---|
+| Old money, Smart casual, Tailored, Minimalist, Coastal, Rugged, Streetwear | Office, Date night, Wedding, Weekend, Holiday |
+
+* **Free rules** label everything: the category and words in the name
+  ("cashmere", "loafer", "hoodie"), colour, fabric and shop. A linen camp
+  collar shirt is coastal, a logo hoodie is streetwear and never office wear.
+* **Optional model labels.** With `OPENROUTER_API_KEY` set, each new product is
+  also labelled once by Claude Haiku as shops update, about US$0.0001 a
+  product (roughly US$0.10 per 3,000 items), capped at 3,000 a day
+  (`DEAL_FINDER_LABEL_CAP`). Labels are stored with the product, so a refresh
+  only pays for new items. Unlabelled items keep their rule labels.
+
+Use them in two places:
+
+* **Deals → Filters → Style**: show only one look or occasion, e.g. old money
+  pieces fit for the office.
+* **Outfit**: pick a look and an occasion (or type "old money date night"),
+  set a budget, and get **up to three different outfits**. Each one stays
+  within budget, mixes shops, and avoids clashes: no more than one patterned
+  piece or one bright colour, nothing far more formal than the rest, and no
+  piece outside the occasion's formality (no trainers at the office). Switch
+  between looks, or tap any alternative to swap a single piece.
+
 ## Run it
 
 You need Python 3.10–3.13 and [uv](https://docs.astral.sh/uv/).
@@ -75,6 +107,9 @@ Keys are optional. Copy `.env.example` to `.env` to add them:
   That is one small call per new brief, and repeating a brief is free. Without
   a key, looks like "office" or "summer wedding" use built-in presets, and
   lists like "navy blazer, white shirt, brown loafers" are read word by word.
+* `OPENROUTER_API_KEY` also turns on model style labels (see
+  [Find your style](#find-your-style)). `DEAL_FINDER_LABEL_MODEL` picks the
+  model (default `anthropic/claude-haiku-5.5`).
 * `SERPER_API_KEY` turns on searching Country Road.
 
 ## Host it on Vercel
@@ -93,7 +128,9 @@ Vercel's free Hobby plan and Neon's free Postgres plan.
      internet, so it will not start without one.
    * `CRON_SECRET`: any random string of 16+ characters. Vercel sends it with
      the daily refresh so nobody else can trigger it.
-   * Optional: `ANTHROPIC_API_KEY`, `SERPER_API_KEY`, as for running locally.
+   * Optional: `OPENROUTER_API_KEY` (brief reading and style labels),
+     `ANTHROPIC_API_KEY`, `SERPER_API_KEY`, as for running locally. Labels are
+     stored in Postgres, so each product is only paid for once.
 4. **Redeploy** (Deployments → ⋯ → Redeploy) so the variables take effect.
 
 Open the site and sign in. The first visit downloads every catalogue, shop by
@@ -110,18 +147,21 @@ To try hosted mode locally: `VERCEL=1 APP_PASSWORD=… DATABASE_URL=postgresql:/
 * **Deals**: leads with the day's single best deal, then everything else.
   **Refresh Deals** checks every shop for new prices, one shop at a time.
   Search, category chips, and filters for discount, price, your
-  sizes, fabric, premium shops, or particular shops. Sort by best deal,
-  discount, price or newest. Tap an item to see its price history, sizes in
-  stock (yours highlighted) and why it scored as it did.
-* **Outfit**: describe a look and a budget. You get the best-value piece for
-  each part, within budget and in your sizes, with alternatives to tap and swap.
+  sizes, fabric, look, occasion, premium shops, or particular shops. Sort by
+  best deal, discount, price or newest. Tap an item to see its price history,
+  sizes in stock (yours highlighted), the looks and occasions it suits, and
+  why it scored as it did.
+* **Outfit**: describe what you need, or just pick a look and an occasion, and
+  set a budget. You get up to three outfits that go together, mixing shops,
+  within budget and in your sizes, with alternatives to tap and swap.
 * **Insights**: the whole market at a glance. Total markdowns, how many
   items are on sale and how deep the cuts go, price drops per day over the
   last 30 days, which shops and categories have the most on sale, and the
   biggest recent drops. Tap a shop or category to browse its deals.
 * **Saved**: tap the heart to watch a price. Saved items show how much they
   have moved since you saved them.
-* **Stores**: your sizes, each shop's status, and paid-search usage.
+* **Stores**: your sizes, each shop's status, paid-search usage, and how many
+  items have model style labels.
 
 The design follows Apple's Human Interface Guidelines: system font, iOS
 colours with automatic dark mode, grouped lists, segmented controls, switches
@@ -138,6 +178,8 @@ uv run deal_finder deals linen --category Shirts --min-discount 40
 uv run deal_finder deals --premium --max-price 300
 uv run deal_finder outfit "smart casual dinner, navy and stone" 600
 uv run deal_finder outfit "something for a garden party" 500 --ai
+uv run deal_finder outfit "" 500 --style old_money --occasion date_night   # three looks
+uv run deal_finder label                         # label new items with a model now (needs OPENROUTER_API_KEY)
 ```
 
 ## How it fits together
@@ -151,7 +193,8 @@ src/deal_finder/
 ├── auth.py        the hosted app's password and the cron secret
 ├── deals.py       deal score, search and filters, shop mixing
 ├── analytics.py   market-wide numbers for the Insights page
-├── stylist.py     brief → shopping list (presets, keywords, or Claude) → outfit
+├── style.py       style labels: looks, occasions, formality (free rules; optional model)
+├── stylist.py     brief → shopping list (presets, keywords, or Claude) → up to three outfits
 ├── extra.py       optional paid search for shops that block catalogue reads
 ├── main.py        command line
 └── web/           FastAPI app and the front end (plain HTML, CSS and JS)
@@ -168,5 +211,6 @@ TEST_DATABASE_URL=postgresql://localhost/test uv run pytest   # also run every d
 ```
 
 The tests cover categories, fabric rules, menswear filtering, price tracking,
-scoring, sizes, search, outfits, the Claude call (with a fake client), paid
+scoring, sizes, search, style labels and their daily cap, outfits and how
+looks vary and avoid clashes, the Claude calls (with fake clients), paid
 search limits, sign-in, the cron job and the API. None of them use the network.
